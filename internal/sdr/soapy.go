@@ -457,7 +457,9 @@ func (s *SoapySource) readBlock(block *Block) (n int, overflow bool, err error) 
 
 	switch {
 	case ret > 0:
-		got := int(ret)
+		// Never trust the driver's count: it indexes a buffer sized for the
+		// request. See ClampSampleCount.
+		got := ClampSampleCount(int(ret), s.blockSize)
 		copy(block.full[:got], unsafe.Slice((*complex64)(s.cbuf), s.blockSize)[:got])
 		return got, false, nil
 

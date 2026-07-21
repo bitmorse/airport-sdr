@@ -60,6 +60,7 @@ func serveCmd(cfgPath, listen string, args []string) error {
 		SourceDescription: rcv.SourceDescription(),
 		Groups:            func() []web.GroupInfo { return groupInfos(rcv) },
 		Switch:            rcv.Switch,
+		MaxListeners:      cfg.Server.MaxListeners,
 		Embed: web.EmbedOptions{
 			AllowedOrigins: cfg.Embed.AllowedOrigins,
 			Width:          cfg.Embed.Width,

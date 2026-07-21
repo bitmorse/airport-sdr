@@ -260,6 +260,29 @@ func TestValidateGain(t *testing.T) {
 	})
 }
 
+// An unbounded listener count is a memory-growth path: every connection
+// allocates buffers and a goroutine. The cap turns that into a refused
+// connection rather than an OOM.
+func TestValidateMaxListeners(t *testing.T) {
+	t.Run("default is a finite cap", func(t *testing.T) {
+		if got := Default().Server.MaxListeners; got != DefaultMaxListeners || got <= 0 {
+			t.Errorf("default max_listeners = %d, want a positive default", got)
+		}
+	})
+	t.Run("zero means unlimited", func(t *testing.T) {
+		c := Default()
+		c.Server.MaxListeners = 0
+		if err := c.Validate(); err != nil {
+			t.Errorf("0 should be accepted as unlimited: %v", err)
+		}
+	})
+	t.Run("negative is refused", func(t *testing.T) {
+		c := Default()
+		c.Server.MaxListeners = -1
+		assertInvalid(t, c, "server.max_listeners")
+	})
+}
+
 func TestValidateListenAddress(t *testing.T) {
 	c := Default()
 	c.Server.Listen = ""

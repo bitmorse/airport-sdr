@@ -34,6 +34,12 @@ server:
   # Tailscale Serve in front rather than binding to 0.0.0.0.
   listen: "127.0.0.1:8080"
 
+  # Cap on concurrent audio connections across all channels. Every listener
+  # costs buffers and a goroutine, so an unbounded count is a way for anyone
+  # who can open a connection to grow memory. Past the cap, connections are
+  # refused with 503. Zero means unlimited, which suits a trusted network only.
+  max_listeners: 50
+
 embed:
   # Sites permitted to frame a channel player at /embed/<channel>.
   #

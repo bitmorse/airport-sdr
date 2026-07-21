@@ -135,6 +135,31 @@ listener hears. That is inherent to a single-tuner receiver.
 Overflow warnings in the log (`device dropped samples`) mean the host is not
 keeping up with USB — lower the sample rate.
 
+## Security
+
+The receiver has no shell-out anywhere, and no HTTP input reaches the
+filesystem: request paths are map lookups, and the browser assets are compiled
+into the binary rather than served from disk. The realistic risks are therefore
+availability and abuse, not host compromise.
+
+**Run it under the supplied systemd unit.** It is what confines a hypothetical
+process compromise: a dedicated non-root user, `ProtectSystem=strict`,
+`NoNewPrivileges`, `MemoryDenyWriteExecute`, a syscall filter, and
+`MemoryMax=256M`. Running the binary as your own login user gives away all of
+that.
+
+**Cap the listeners.** `server.max_listeners` (default 50) bounds the memory an
+anonymous client can cause you to allocate.
+
+**Group switching is unauthenticated.** Any listener can retune the radio for
+everyone, which is inherent to a single tuner. That is fine on a tailnet and
+wrong on a public deployment; put authentication in front if you expose it.
+
+**Keep the toolchain current** and run `make lint`, which includes
+`govulncheck`. The standard library carries security fixes, and a receiver
+serving TLS-terminated traffic exercises `crypto/tls`, `crypto/x509` and
+`html/template` directly.
+
 ## Legal note
 
 Receiving airband is generally unproblematic. *Redistributing* ATC audio is not

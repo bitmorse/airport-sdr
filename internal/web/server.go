@@ -69,6 +69,11 @@ type Options struct {
 
 	// Embed controls which sites, if any, may frame a channel player.
 	Embed EmbedOptions
+
+	// MaxListeners caps concurrent audio connections across all channels.
+	// Zero means unlimited. Each listener costs buffers and a goroutine, so an
+	// unbounded count is a memory-growth path open to anyone who can connect.
+	MaxListeners int
 }
 
 // Server routes audio and status over HTTP.
@@ -255,6 +260,34 @@ func writeJSON(w http.ResponseWriter, v any) {
 	}
 }
 
+// atCapacity reports whether the receiver already has as many listeners as it
+// is willing to serve.
+//
+// The count is a sum across hubs rather than a reserved slot, so simultaneous
+// requests can overshoot slightly. That is deliberate: the cap exists to bound
+// growth, not to be exact, and taking a lock on the audio path to make it exact
+// would cost more than the overshoot.
+func (s *Server) atCapacity() bool {
+	if s.opts.MaxListeners <= 0 {
+		return false
+	}
+	total := 0
+	for _, ch := range s.opts.Channels {
+		total += ch.Hub.Listeners()
+	}
+	return total >= s.opts.MaxListeners
+}
+
+func (s *Server) refuseIfFull(w http.ResponseWriter, r *http.Request) bool {
+	if !s.atCapacity() {
+		return false
+	}
+	slog.Warn("refusing listener: at capacity",
+		"max", s.opts.MaxListeners, "remote", r.RemoteAddr)
+	http.Error(w, "the receiver is at its listener limit", http.StatusServiceUnavailable)
+	return true
+}
+
 // handleWebSocket streams mu-law frames to a browser.
 //
 // This is the low-latency path: raw companded audio with no container, decoded
@@ -265,6 +298,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ch, ok := s.byName[r.PathValue("name")]
 	if !ok {
 		http.Error(w, "no such channel", http.StatusNotFound)
+		return
+	}
+	if s.refuseIfFull(w, r) {
 		return
 	}
 
@@ -343,6 +379,9 @@ func (s *Server) handleWAV(w http.ResponseWriter, r *http.Request) {
 	ch, ok := s.byName[name]
 	if !ok {
 		http.Error(w, "no such channel", http.StatusNotFound)
+		return
+	}
+	if s.refuseIfFull(w, r) {
 		return
 	}
 

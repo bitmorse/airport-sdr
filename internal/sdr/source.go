@@ -134,6 +134,23 @@ func BlockSizeFor(sampleRate float64) int {
 	return n
 }
 
+// ClampSampleCount bounds what a driver claims it returned.
+//
+// A driver should never report more samples than were asked for, but this is
+// the boundary with C: trusting the number would index past the buffer that
+// was sized for the request. Go's bounds checking makes that a crash rather
+// than memory corruption, and a crash is still a denial of service, so the
+// count is clamped instead.
+func ClampSampleCount(reported, requested int) int {
+	if reported < 0 {
+		return 0
+	}
+	if reported > requested {
+		return requested
+	}
+	return reported
+}
+
 // EncodeCF32 writes src into dst as interleaved little-endian float32 pairs and
 // returns the number of samples written, which is limited by whichever of the
 // two buffers runs out first. It allocates nothing.

@@ -48,6 +48,11 @@ const (
 	// edges are where the anti-aliasing filter rolls off.
 	UsableBandwidth = 0.8
 
+	// DefaultMaxListeners bounds concurrent listeners. Each one costs buffers
+	// and a goroutine, so an unbounded count is a memory-growth path reachable
+	// by anyone who can open a connection.
+	DefaultMaxListeners = 50
+
 	DefaultAudioRate = 8_000.0
 	DefaultSquelchDB = -35.0
 
@@ -197,6 +202,9 @@ type ServerConfig struct {
 	// Listen defaults to loopback. Exposing the receiver beyond this host must
 	// be a deliberate act, so a public bind address is never a default.
 	Listen string `yaml:"listen"`
+	// MaxListeners caps concurrent audio connections across all channels.
+	// Zero means unlimited, which is only sensible on a trusted network.
+	MaxListeners int `yaml:"max_listeners"`
 }
 
 // GroupConfig is one tuner position and the channels it covers.
@@ -256,7 +264,7 @@ func Default() Config {
 			SampleRate: 960_000,
 		},
 		Audio:  AudioConfig{Rate: DefaultAudioRate},
-		Server: ServerConfig{Listen: "127.0.0.1:8080"},
+		Server: ServerConfig{Listen: "127.0.0.1:8080", MaxListeners: DefaultMaxListeners},
 		// No origins: embedding is off until the operator opts in.
 		Embed: EmbedConfig{Width: DefaultEmbedWidth, Height: DefaultEmbedHeight},
 		Groups: []GroupConfig{{
@@ -339,10 +347,15 @@ func (a AudioConfig) validate() []error {
 }
 
 func (s ServerConfig) validate() []error {
+	var errs []error
 	if s.Listen == "" {
-		return []error{invalid("server.listen", "must be set, e.g. 127.0.0.1:8080")}
+		errs = append(errs, invalid("server.listen", "must be set, e.g. 127.0.0.1:8080"))
 	}
-	return nil
+	if s.MaxListeners < 0 {
+		errs = append(errs, invalid("server.max_listeners",
+			"must not be negative, got %d; use 0 for unlimited", s.MaxListeners))
+	}
+	return errs
 }
 
 // validateGroups checks every group, and the uniqueness of names across them.

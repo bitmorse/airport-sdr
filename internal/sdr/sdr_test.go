@@ -321,6 +321,29 @@ func TestFileSourceReportsItsConfiguration(t *testing.T) {
 	}
 }
 
+// --- driver bounds ----------------------------------------------------------
+
+// The count a driver reports is the one number from C that indexes a buffer,
+// so it is never taken on trust.
+func TestClampSampleCount(t *testing.T) {
+	cases := map[string]struct{ reported, requested, want int }{
+		"normal":          {100, 1024, 100},
+		"exactly the ask": {1024, 1024, 1024},
+		"more than asked": {2048, 1024, 1024},
+		"negative":        {-1, 1024, 0},
+		"zero":            {0, 1024, 0},
+		"absurdly large":  {1 << 30, 1024, 1024},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := ClampSampleCount(c.reported, c.requested); got != c.want {
+				t.Errorf("ClampSampleCount(%d, %d) = %d, want %d",
+					c.reported, c.requested, got, c.want)
+			}
+		})
+	}
+}
+
 // --- retuning ---------------------------------------------------------------
 
 // A capture holds one slice of spectrum and cannot be moved. Accepting its own

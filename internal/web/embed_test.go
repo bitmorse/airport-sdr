@@ -180,3 +180,64 @@ func TestEmbedLoadsTheSharedPlayer(t *testing.T) {
 		t.Error("the embed page does not load the shared player")
 	}
 }
+
+// --- listener cap -----------------------------------------------------------
+
+// Every listener costs buffers and a goroutine, so an unbounded count is a
+// memory-growth path reachable by anyone who can open a connection. Past the
+// cap a connection is refused rather than accepted and paid for.
+func TestListenerCapRefusesExtraConnections(t *testing.T) {
+	hub := stream.NewHub(8, 160)
+	srv, err := NewServer(Options{
+		SourceDescription: "test source",
+		Channels: []ChannelInfo{
+			{Name: "Tower", Group: "Alpha", Freq: 118_100_000, AudioRate: 8000, Hub: hub},
+		},
+		MaxListeners: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Two listeners already attached: the third must be turned away.
+	a, b := hub.Subscribe(), hub.Subscribe()
+	defer a.Close()
+	defer b.Close()
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream/Tower.wav", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("wav stream past the cap = %d, want 503", rec.Code)
+	}
+
+	a.Close()
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream/Nope.wav", nil))
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Error("below the cap a request should not be refused for capacity")
+	}
+}
+
+func TestListenerCapOfZeroIsUnlimited(t *testing.T) {
+	hub := stream.NewHub(8, 160)
+	srv, err := NewServer(Options{
+		SourceDescription: "test source",
+		Channels: []ChannelInfo{
+			{Name: "Tower", Group: "Alpha", Freq: 118_100_000, AudioRate: 8000, Hub: hub},
+		},
+		MaxListeners: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 5; i++ {
+		sub := hub.Subscribe()
+		defer sub.Close()
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/stream/Nope.wav", nil))
+	if rec.Code == http.StatusServiceUnavailable {
+		t.Error("a zero cap means unlimited, so nothing should be refused")
+	}
+}

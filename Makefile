@@ -40,8 +40,9 @@ GOFLAGS ?=
 FULL_TAGS := soapy
 
 .DEFAULT_GOAL := build
-.PHONY: build build-full run run-embed serve-off test watch test-alloc test-assert lint \
-        lint-js bench cross record replay install uninstall clean tools help
+.PHONY: build build-full run run-embed serve-off test watch test-alloc test-assert \
+        lint lint-js vulncheck bench cross record replay install uninstall clean \
+        tools help
 
 ## build: pure-Go binary (no cgo, cross-compiles anywhere)
 build:
@@ -130,6 +131,14 @@ lint:
 		&& golangci-lint run \
 		|| echo "golangci-lint not installed, ran go vet only (make tools)"
 	@$(MAKE) --no-print-directory lint-js
+	@$(MAKE) --no-print-directory vulncheck
+
+## vulncheck: check dependencies and the standard library against the Go
+##            vulnerability database
+vulncheck:
+	@command -v govulncheck >/dev/null 2>&1 || { \
+		echo "govulncheck not installed, skipping (make tools)"; exit 0; }
+	govulncheck ./...
 
 ## lint-js: syntax-check the browser code, which Go tests cannot reach
 lint-js:
@@ -161,6 +170,7 @@ replay: build
 ## tools: install optional developer tooling
 tools:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install golang.org/x/vuln/cmd/govulncheck@latest
 
 ## install: install binary, config and service unit
 install: build-full

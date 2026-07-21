@@ -35,6 +35,7 @@ Device-level settings, shared by every group.
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `listen` | addr | `127.0.0.1:8080` | Loopback by default. Exposure must be deliberate. |
+| `max_listeners` | int | `50` | Cap on concurrent audio connections across all channels; further connections get 503. Each listener costs buffers and a goroutine, so an unbounded count is a memory-growth path. `0` means unlimited. |
 
 ### `embed`
 
