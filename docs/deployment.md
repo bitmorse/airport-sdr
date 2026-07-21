@@ -104,6 +104,8 @@ Prefer Tailscale.
 | `/api/status` | Level, squelch, listener count, dropped frames, active group |
 | `/api/groups` | Configured tuner positions and which is live |
 | `POST /api/groups/{name}/activate` | Retune to another group |
+| `/embed/{name}` | Embeddable single-channel player; 404 unless an origin is allowed |
+| `/oembed` | oEmbed discovery for an embed URL |
 
 The WebSocket sends **nothing between transmissions** — the squelch already knows
 when the channel is idle, so average bandwidth measured 17.8 kbit/s against

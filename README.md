@@ -147,6 +147,20 @@ anything needing a C library lives behind a build tag, so
 See [docs/development.md](docs/development.md) for the build tags and the
 testing approach.
 
+## Embedding
+
+Another site can host a single channel as an iframe player and drive it from its
+own JavaScript. Embedding is off until an operator lists the embedder's origin:
+
+```yaml
+embed:
+  allowed_origins: ["https://yoursite.example"]
+```
+
+An iframe is used rather than opening the API cross-origin because a frame keeps
+its own origin — the low-latency WebSocket keeps working inside it with no CORS
+and no relaxed origin checks. See **[docs/embed.md](docs/embed.md)**.
+
 ## Documentation
 
 - **[docs/hardware.md](docs/hardware.md)** — tested radios, antenna and gain
@@ -159,6 +173,8 @@ testing approach.
   coding rules, and developing with no radio attached
 - **[docs/deployment.md](docs/deployment.md)** — installing on an edge device,
   systemd, and reaching it securely over Tailscale
+- **[docs/embed.md](docs/embed.md)** — embedding a channel in another site and
+  controlling it over `postMessage`
 
 ## Status
 

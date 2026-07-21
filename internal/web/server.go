@@ -66,6 +66,9 @@ type Options struct {
 	// Switch moves the radio to another group. A nil Switch means the receiver
 	// cannot retune, which is the case when replaying a capture.
 	Switch func(ctx context.Context, group string) error
+
+	// Embed controls which sites, if any, may frame a channel player.
+	Embed EmbedOptions
 }
 
 // Server routes audio and status over HTTP.
@@ -99,6 +102,8 @@ func NewServer(opts Options) (*Server, error) {
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /ws/audio/{name}", s.handleWebSocket)
 	s.mux.HandleFunc("GET /stream/{name}", s.handleWAV)
+	s.mux.HandleFunc("GET /embed/{name}", s.handleEmbed)
+	s.mux.HandleFunc("GET /oembed", s.handleOEmbed)
 	return s, nil
 }
 

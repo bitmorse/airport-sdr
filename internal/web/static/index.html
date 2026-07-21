@@ -71,6 +71,8 @@
     border-top: 1px solid var(--line); padding-top: 1rem;
   }
   .note a { color: var(--accent); }
+  /* No border or spacing when there is nothing to say. */
+  .note:empty { display: none; }
   .warn { color: #e0a458; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95em; }
 </style>
@@ -85,29 +87,13 @@
   <div class="note" id="note"></div>
 </main>
 
+<script src="/static/player.js"></script>
 <script>
-// Audio is streamed as G.711 mu-law: one byte per sample at 8 kHz, which is
-// 64 kbit/s and needs no codec support in the browser at all. The expansion
-// table below is built once and turns each byte back into a float.
-const ULAW = (() => {
-  const table = new Float32Array(256);
-  for (let i = 0; i < 256; i++) {
-    const u = ~i & 0xff;
-    const exponent = (u >> 4) & 0x07;
-    const mantissa = ((u & 0x0f) << 3) + 0x84;
-    let sample = (mantissa << exponent) - 0x84;
-    if (u & 0x80) sample = -sample;
-    table[i] = sample / 32768;
-  }
-  return table;
-})();
+// The audio pipeline lives in player.js, shared with the embeddable player.
+// This file is the page's UI on top of it.
+const canUseWorklet = AirportSDR.canUseWorklet;
 
-// AudioWorklet needs a secure context. Over plain http to a LAN address it is
-// unavailable, so the page falls back to the WAV endpoint, which any browser
-// can play with no JavaScript involved.
-const canUseWorklet = window.isSecureContext && !!(window.AudioContext || window.webkitAudioContext);
-
-const state = { active: null, ctx: null, node: null, socket: null, audio: null, group: null };
+const state = { active: null, player: null, group: null };
 
 async function boot() {
   const note = document.getElementById('note');
@@ -148,15 +134,13 @@ async function boot() {
 
   await refreshGroups();
 
-  note.innerHTML = canUseWorklet
-    ? 'Low-latency stream: mu-law over WebSocket, 64 kbit/s while a transmission ' +
-      'is on air and nothing at all between them, so the average is far lower. ' +
-      'Any channel can also be played by a plain audio player at ' +
-      '<code>/stream/&lt;name&gt;.wav</code>, which stays continuous.'
-    : '<span class="warn">Live low-latency audio needs a secure context.</span> ' +
-      'Over plain http this page falls back to <code>/stream/&lt;name&gt;.wav</code>, ' +
-      'which works everywhere but adds a few seconds of delay. Reach the receiver ' +
-      'over https (Tailscale Serve does this for you) for the low-latency path.';
+  // Nothing is shown in the normal case. The warning stays because without it
+  // a listener on plain http silently gets the delayed WAV fallback with no
+  // indication why, which looks like the receiver being slow.
+  if (!canUseWorklet) {
+    note.innerHTML = '<span class="warn">Delayed audio:</span> low-latency ' +
+      'streaming needs https, so this page is using the WAV fallback.';
+  }
 
   poll();
   setInterval(poll, 1000);
@@ -229,14 +213,27 @@ async function activate(group) {
 function toggle(name) {
   if (state.active === name) { stop(); return; }
   stop();
-  canUseWorklet ? startWorklet(name) : startFallback(name);
+  start(name);
+}
+
+async function start(name) {
+  const card = cardFor(name);
+  state.player = AirportSDR.createPlayer({
+    channel: name,
+    onBuffer: (info) => {
+      const el = card && card.querySelector('[data-role=buffer]');
+      if (el) el.textContent = `buffer ${(info.buffered * 1000).toFixed(0)} ms`;
+    },
+    onError: (code) => { if (code === 'stream-failed' && state.active === name) stop(); },
+  });
+
+  state.active = name;
+  markListening(name);
+  await state.player.play();
 }
 
 function stop() {
-  if (state.socket) { state.socket.close(); state.socket = null; }
-  if (state.node) { state.node.disconnect(); state.node = null; }
-  if (state.ctx) { state.ctx.close(); state.ctx = null; }
-  if (state.audio) { state.audio.pause(); state.audio.src = ''; state.audio = null; }
+  if (state.player) { state.player.pause(); state.player = null; }
 
   if (state.active) {
     const card = cardFor(state.active);
@@ -247,46 +244,6 @@ function stop() {
     }
   }
   state.active = null;
-}
-
-async function startWorklet(name) {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  // Asking for 8 kHz avoids resampling entirely where the browser allows it;
-  // where it does not, the worklet interpolates using the ratio below.
-  const ctx = new AC({ sampleRate: 8000, latencyHint: 'interactive' });
-  await ctx.audioWorklet.addModule('/static/pcm-worklet.js');
-
-  const node = new AudioWorkletNode(ctx, 'pcm-player', {
-    processorOptions: { ratio: 8000 / ctx.sampleRate, capacity: 16384, prebuffer: 480 },
-  });
-  node.connect(ctx.destination);
-
-  const card = cardFor(name);
-  node.port.onmessage = (e) => {
-    const el = card && card.querySelector('[data-role=buffer]');
-    if (el) el.textContent = `buffer ${(e.data.buffered * 1000).toFixed(0)} ms`;
-  };
-
-  const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/audio/${encodeURIComponent(name)}`);
-  socket.binaryType = 'arraybuffer';
-  socket.onmessage = (event) => {
-    const bytes = new Uint8Array(event.data);
-    const samples = new Float32Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) samples[i] = ULAW[bytes[i]];
-    node.port.postMessage(samples);
-  };
-  socket.onclose = () => { if (state.active === name) stop(); };
-
-  Object.assign(state, { active: name, ctx, node, socket });
-  markListening(name);
-  if (ctx.state === 'suspended') await ctx.resume();
-}
-
-function startFallback(name) {
-  const audio = new Audio(`/stream/${encodeURIComponent(name)}.wav`);
-  audio.play().catch(() => {});
-  Object.assign(state, { active: name, audio });
-  markListening(name);
 }
 
 function markListening(name) {

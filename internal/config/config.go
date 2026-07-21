@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -53,6 +54,14 @@ const (
 	// legacyGroupName is given to the single group synthesised from a config
 	// written before groups existed.
 	legacyGroupName = "Default"
+
+	// Default size of the embeddable player. It is a single button, so it is
+	// small; an embedder can override the iframe dimensions anyway.
+	DefaultEmbedWidth  = 280
+	DefaultEmbedHeight = 64
+
+	// EmbedAnyOrigin permits any site to frame the player.
+	EmbedAnyOrigin = "*"
 )
 
 // Mode is a demodulation scheme. Airband voice is AM; NFM is reserved for later.
@@ -79,6 +88,7 @@ type Config struct {
 	SDR    SDRConfig     `yaml:"sdr"`
 	Audio  AudioConfig   `yaml:"audio"`
 	Server ServerConfig  `yaml:"server"`
+	Embed  EmbedConfig   `yaml:"embed"`
 	Groups []GroupConfig `yaml:"groups"`
 
 	// Channels is the pre-groups form: a flat channel list tuned by
@@ -101,6 +111,82 @@ type SDRConfig struct {
 	// support the pre-groups config form.
 	CenterFreq float64 `yaml:"center_freq"`
 	SampleRate float64 `yaml:"sample_rate"`
+}
+
+// EmbedConfig controls whether other sites may frame a channel player.
+//
+// Embedding is off unless an origin is listed. Framing the receiver lets
+// another site put its visitors on your radio, so it is opt-in per origin
+// rather than something a default turns on.
+type EmbedConfig struct {
+	// AllowedOrigins are the sites permitted to frame the player, each a bare
+	// origin such as "https://example.com". The single entry "*" permits any
+	// site, which suits a deliberately public receiver and nothing else.
+	AllowedOrigins []string `yaml:"allowed_origins"`
+	// Width and Height are the default iframe dimensions advertised by oEmbed.
+	Width  int `yaml:"width"`
+	Height int `yaml:"height"`
+}
+
+// Enabled reports whether any site may embed the player.
+func (e EmbedConfig) Enabled() bool { return len(e.AllowedOrigins) > 0 }
+
+// AllowsAnyOrigin reports whether the allowlist is the wildcard.
+func (e EmbedConfig) AllowsAnyOrigin() bool {
+	return len(e.AllowedOrigins) == 1 && e.AllowedOrigins[0] == EmbedAnyOrigin
+}
+
+func (e EmbedConfig) validate() []error {
+	var errs []error
+
+	for i, origin := range e.AllowedOrigins {
+		if origin == EmbedAnyOrigin {
+			if len(e.AllowedOrigins) > 1 {
+				errs = append(errs, invalid("embed.allowed_origins",
+					"%q permits every site, so listing it alongside specific origins is "+
+						"contradictory; use either the wildcard or an allowlist", EmbedAnyOrigin))
+			}
+			continue
+		}
+		if err := validateOrigin(origin); err != nil {
+			errs = append(errs, invalid(
+				fmt.Sprintf("embed.allowed_origins[%d]", i), "%s", err.Error()))
+		}
+	}
+
+	if e.Width < 0 {
+		errs = append(errs, invalid("embed.width", "must not be negative, got %d", e.Width))
+	}
+	if e.Height < 0 {
+		errs = append(errs, invalid("embed.height", "must not be negative, got %d", e.Height))
+	}
+	return errs
+}
+
+// validateOrigin checks that s is a bare origin: scheme, host and optional
+// port, and nothing else. Pasting a whole page URL is the usual mistake, and it
+// would never match the Origin header a browser actually sends.
+func validateOrigin(s string) error {
+	if s == "" {
+		return errors.New("must not be empty")
+	}
+
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("%q is not a URL: %v", s, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%q needs an http:// or https:// scheme", s)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%q has no host", s)
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf(
+			"%q is a URL, not an origin; use just the scheme, host and port, as in %q",
+			s, u.Scheme+"://"+u.Host)
+	}
+	return nil
 }
 
 type AudioConfig struct {
@@ -171,6 +257,8 @@ func Default() Config {
 		},
 		Audio:  AudioConfig{Rate: DefaultAudioRate},
 		Server: ServerConfig{Listen: "127.0.0.1:8080"},
+		// No origins: embedding is off until the operator opts in.
+		Embed: EmbedConfig{Width: DefaultEmbedWidth, Height: DefaultEmbedHeight},
 		Groups: []GroupConfig{{
 			Name:       "Tower",
 			CenterFreq: 118_250_000,
@@ -193,6 +281,13 @@ func (c Config) Group(name string) (GroupConfig, bool) {
 // normalise folds the pre-groups form into Groups so that everything
 // downstream deals only with groups.
 func (c *Config) normalise() error {
+	if c.Embed.Width == 0 {
+		c.Embed.Width = DefaultEmbedWidth
+	}
+	if c.Embed.Height == 0 {
+		c.Embed.Height = DefaultEmbedHeight
+	}
+
 	switch {
 	case len(c.Groups) > 0 && len(c.Channels) > 0:
 		return errors.New(
@@ -217,6 +312,7 @@ func (c Config) Validate() error {
 	errs := c.SDR.validate()
 	errs = append(errs, c.Audio.validate()...)
 	errs = append(errs, c.Server.validate()...)
+	errs = append(errs, c.Embed.validate()...)
 	errs = append(errs, c.validateGroups()...)
 	return errors.Join(errs...)
 }

@@ -69,6 +69,14 @@ lint:
 	@command -v golangci-lint >/dev/null 2>&1 \
 		&& golangci-lint run \
 		|| echo "golangci-lint not installed, ran go vet only (make tools)"
+	@$(MAKE) --no-print-directory lint-js
+
+## lint-js: syntax-check the browser code, which Go tests cannot reach
+lint-js:
+	@command -v node >/dev/null 2>&1 || { \
+		echo "node not installed, skipping browser syntax check"; exit 0; }
+	@for f in internal/web/static/*.js; do node --check "$$f" || exit 1; done
+	@echo "browser javascript parses"
 
 ## bench: DSP benchmarks, tracked against the edge CPU budget
 bench:

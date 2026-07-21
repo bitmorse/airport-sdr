@@ -48,6 +48,11 @@ func serveCmd(cfgPath, listen string, args []string) error {
 		SourceDescription: rcv.SourceDescription(),
 		Groups:            func() []web.GroupInfo { return groupInfos(rcv) },
 		Switch:            rcv.Switch,
+		Embed: web.EmbedOptions{
+			AllowedOrigins: cfg.Embed.AllowedOrigins,
+			Width:          cfg.Embed.Width,
+			Height:         cfg.Embed.Height,
+		},
 	})
 	if err != nil {
 		return err
@@ -61,6 +66,12 @@ func serveCmd(cfgPath, listen string, args []string) error {
 			slog.Error("receiver stopped", "err", err)
 		}
 	}()
+
+	if cfg.Embed.AllowsAnyOrigin() {
+		slog.Warn("embedding is open to any site; /embed can be framed by anyone")
+	} else if cfg.Embed.Enabled() {
+		slog.Info("embedding enabled", "origins", cfg.Embed.AllowedOrigins)
+	}
 
 	slog.Info("receiver running", "source", rcv.SourceDescription(),
 		"group", rcv.ActiveGroup(), "groups", len(cfg.Groups),

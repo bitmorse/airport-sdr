@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Channel}}</title>
+<link rel="alternate" type="application/json+oembed" href="{{.OEmbed}}" title="{{.Channel}}">
+<style>
+  :root { --bg: #14171c; --text: #e6e9ef; --dim: #8b93a1; --accent: #4a9eff; --live: #34d17d; }
+  :root[data-theme="light"] { --bg: #fff; --text: #1a1d23; --dim: #666e7d; --accent: #0b6bcb; --live: #12904f; }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) { --bg: #fff; --text: #1a1d23; --dim: #666e7d; --accent: #0b6bcb; --live: #12904f; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: flex; align-items: center; gap: .65rem; padding: .5rem .75rem;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  button {
+    font: inherit; font-weight: 500; color: #fff; background: var(--accent);
+    border: 0; border-radius: 7px; padding: .4rem .9rem; cursor: pointer; flex: none;
+  }
+  button.on { background: #d1495b; }
+  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: #3a4150; flex: none; }
+  .dot.open { background: var(--live); box-shadow: 0 0 7px var(--live); }
+  .name { font-weight: 600; white-space: nowrap; }
+  .freq { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .msg { color: var(--dim); font-size: .8rem; margin-left: auto; text-align: right; }
+</style>
+</head>
+<body
+  data-channel="{{.Channel}}"
+  data-group="{{.Group}}"
+  data-frequency="{{.Frequency}}"
+  data-audio-rate="{{.AudioRate}}"
+  data-origin="{{.Origin}}"
+  data-muted="{{.Muted}}"
+  data-autoplay="{{.Autoplay}}"
+  data-theme="{{.Theme}}"
+>
+  <button id="toggle" type="button">Listen</button>
+  <span class="dot" id="squelch" title="carrier"></span>
+  <span class="name">{{.Channel}}</span>
+  <span class="freq" id="freq"></span>
+  <span class="msg" id="msg"></span>
+
+<script src="/static/player.js"></script>
+<script src="/static/embed.js"></script>
+</body>
+</html>

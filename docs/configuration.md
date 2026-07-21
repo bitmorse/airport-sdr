@@ -36,6 +36,21 @@ Device-level settings, shared by every group.
 |---|---|---|---|
 | `listen` | addr | `127.0.0.1:8080` | Loopback by default. Exposure must be deliberate. |
 
+### `embed`
+
+Who, if anyone, may frame a channel player. See [embed.md](embed.md).
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `allowed_origins` | list | `[]` | Sites permitted to frame the player. Empty disables embedding: `/embed` returns 404. Each entry is a bare origin — `https://example.com`, not a page URL. The single entry `"*"` permits any site. |
+| `width` | int | `280` | Default iframe width advertised by oEmbed. |
+| `height` | int | `64` | Default iframe height. |
+
+Framing the receiver puts another site's visitors on your radio, so it is opt-in
+per origin rather than something a default turns on. The embedded player is
+listen-only and cannot switch groups: one tuner serves everyone, so a visitor to
+someone else's site must not be able to retune it.
+
 ### `groups[]`
 
 One tuner position and the channels it covers. The radio serves one group at a

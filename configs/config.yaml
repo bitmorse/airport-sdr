@@ -34,6 +34,28 @@ server:
   # Tailscale Serve in front rather than binding to 0.0.0.0.
   listen: "127.0.0.1:8080"
 
+embed:
+  # Sites permitted to frame a channel player at /embed/<channel>.
+  #
+  # Empty (the default) disables embedding entirely: /embed returns 404 and no
+  # site can frame the receiver. Framing puts another site's visitors on your
+  # radio, so it is opt-in per origin.
+  #
+  # Each entry is a bare origin — scheme, host and optional port, nothing else.
+  # A whole page URL will never match the Origin a browser sends and is refused.
+  #   allowed_origins:
+  #     - "https://yoursite.example"
+  #     - "http://localhost:9999"
+  #
+  # The single entry "*" permits any site on the internet. That suits a
+  # deliberately public receiver and nothing else.
+  allowed_origins: []
+
+  # Default iframe size advertised by the oEmbed endpoint. The embedded player
+  # is a single button, so it is small; an embedder can override it anyway.
+  width: 280
+  height: 64
+
 # The radio covers one group at a time. Every channel inside the active group
 # is demodulated in parallel; switching groups retunes the tuner.
 #

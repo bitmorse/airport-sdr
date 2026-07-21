@@ -286,6 +286,124 @@ func TestValidateReportsEveryProblemAtOnce(t *testing.T) {
 	}
 }
 
+// --- embedding --------------------------------------------------------------
+
+// Letting an arbitrary site frame the player is a decision the operator has to
+// make deliberately, so nothing is permitted until an origin is listed.
+func TestEmbeddingIsDisabledByDefault(t *testing.T) {
+	c := Default()
+	if len(c.Embed.AllowedOrigins) != 0 {
+		t.Errorf("default allows origins %v, want none", c.Embed.AllowedOrigins)
+	}
+	if c.Embed.Enabled() {
+		t.Error("embedding must be disabled until an origin is configured")
+	}
+}
+
+func TestEmbedHasDefaultDimensions(t *testing.T) {
+	c := Default()
+	if c.Embed.Width != DefaultEmbedWidth || c.Embed.Height != DefaultEmbedHeight {
+		t.Errorf("default embed size = %dx%d, want %dx%d",
+			c.Embed.Width, c.Embed.Height, DefaultEmbedWidth, DefaultEmbedHeight)
+	}
+}
+
+func TestEmbedEnabledOnceAnOriginIsListed(t *testing.T) {
+	c := Default()
+	c.Embed.AllowedOrigins = []string{"https://example.com"}
+	if !c.Embed.Enabled() {
+		t.Error("embedding should be enabled once an origin is listed")
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("a bare origin must be valid: %v", err)
+	}
+}
+
+// An origin is scheme + host + optional port and nothing else. Pasting a full
+// page URL is the obvious mistake, and it silently would never match.
+func TestValidateEmbedOriginMustBeBare(t *testing.T) {
+	for name, origin := range map[string]string{
+		"has a path":     "https://example.com/app",
+		"has a query":    "https://example.com?a=1",
+		"has a fragment": "https://example.com#x",
+		"no scheme":      "example.com",
+		"trailing slash": "https://example.com/",
+		"empty":          "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := Default()
+			c.Embed.AllowedOrigins = []string{origin}
+			assertInvalid(t, c, "embed.allowed_origins[0]")
+		})
+	}
+}
+
+func TestValidateEmbedAcceptsRealOrigins(t *testing.T) {
+	for _, origin := range []string{
+		"https://example.com",
+		"http://localhost:9999",
+		"https://sub.example.co.uk:8443",
+	} {
+		c := Default()
+		c.Embed.AllowedOrigins = []string{origin}
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q should be a valid origin: %v", origin, err)
+		}
+	}
+}
+
+// A wildcard lets any site on the internet frame the receiver. That is a real
+// choice for a public deployment, but mixing it with an allowlist is
+// contradictory and almost certainly a mistake.
+func TestValidateEmbedWildcard(t *testing.T) {
+	t.Run("alone is allowed", func(t *testing.T) {
+		c := Default()
+		c.Embed.AllowedOrigins = []string{"*"}
+		if err := c.Validate(); err != nil {
+			t.Errorf("a lone wildcard must be permitted: %v", err)
+		}
+	})
+	t.Run("mixed with an allowlist is refused", func(t *testing.T) {
+		c := Default()
+		c.Embed.AllowedOrigins = []string{"*", "https://example.com"}
+		assertInvalid(t, c, "embed.allowed_origins")
+	})
+}
+
+func TestValidateEmbedDimensions(t *testing.T) {
+	t.Run("negative width", func(t *testing.T) {
+		c := Default()
+		c.Embed.Width = -1
+		assertInvalid(t, c, "embed.width")
+	})
+	t.Run("negative height", func(t *testing.T) {
+		c := Default()
+		c.Embed.Height = -1
+		assertInvalid(t, c, "embed.height")
+	})
+}
+
+func TestLoadFillsEmbedDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "embed:\n  allowed_origins:\n    - \"https://example.com\"\n" +
+		"groups:\n  - name: Tower\n    center_freq: 118250000\n    sample_rate: 960000\n" +
+		"    channels:\n      - name: Tower\n        freq: 118100000\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.Embed.Width != DefaultEmbedWidth || c.Embed.Height != DefaultEmbedHeight {
+		t.Errorf("embed size = %dx%d, want the defaults", c.Embed.Width, c.Embed.Height)
+	}
+	if !c.Embed.Enabled() {
+		t.Error("embedding should be enabled by the loaded config")
+	}
+}
+
 // --- lookup -----------------------------------------------------------------
 
 func TestGroupLookup(t *testing.T) {
