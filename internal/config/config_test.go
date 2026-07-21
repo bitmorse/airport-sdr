@@ -46,47 +46,97 @@ func assertInvalid(t *testing.T, c Config, wantField string) {
 	t.Fatalf("expected a validation error on %q, got %v", wantField, fieldErrors(t, err))
 }
 
+// groundGroup is the busiest real cluster: four channels inside 170 kHz, with
+// the tuner parked in the gap between the lowest two.
+func groundGroup() GroupConfig {
+	return GroupConfig{
+		Name:       "Ground",
+		CenterFreq: 121_805_000,
+		SampleRate: 960_000,
+		Channels: []ChannelConfig{
+			{Name: "Apron S", Freq: 121_755_000, Mode: ModeAM, SquelchDB: -62},
+			{Name: "Apron N", Freq: 121_855_000, Mode: ModeAM, SquelchDB: -62},
+			{Name: "Ground", Freq: 121_902_000, Mode: ModeAM, SquelchDB: -62},
+			{Name: "Delivery", Freq: 121_925_000, Mode: ModeAM, SquelchDB: -62},
+		},
+	}
+}
+
+// --- defaults ---------------------------------------------------------------
+
 func TestDefaultConfigIsValid(t *testing.T) {
 	if err := Default().Validate(); err != nil {
 		t.Fatalf("default config must be valid, got: %v", err)
 	}
 }
 
-// The edge default must be the documented one: 960 kS/s centred at 118.25 MHz
-// so that tower (118.1) and ground (118.4) both sit inside one capture without
-// either landing on the local oscillator.
-func TestDefaultConfigMatchesEdgeProfile(t *testing.T) {
+func TestDefaultHasOneGroup(t *testing.T) {
 	c := Default()
-	if c.SDR.SampleRate != 960_000 {
-		t.Errorf("sample rate = %v, want 960000", c.SDR.SampleRate)
+	if len(c.Groups) != 1 {
+		t.Fatalf("default has %d groups, want 1", len(c.Groups))
 	}
-	if c.SDR.CenterFreq != 118_250_000 {
-		t.Errorf("centre freq = %v, want 118250000", c.SDR.CenterFreq)
+	g := c.Groups[0]
+	if g.CenterFreq != 118_250_000 || g.SampleRate != 960_000 {
+		t.Errorf("default group tuning = %.0f Hz @ %.0f S/s, want 118250000 @ 960000",
+			g.CenterFreq, g.SampleRate)
 	}
-	if len(c.Channels) != 1 || c.Channels[0].Freq != 118_100_000 {
-		t.Errorf("want exactly one channel on 118.1 MHz, got %+v", c.Channels)
+	if len(g.Channels) != 1 || g.Channels[0].Freq != 118_100_000 {
+		t.Errorf("want a single channel on 118.1 MHz, got %+v", g.Channels)
 	}
 }
 
-func TestValidateSampleRate(t *testing.T) {
+func TestDefaultListenIsLoopback(t *testing.T) {
+	if got := Default().Server.Listen; got != "127.0.0.1:8080" {
+		t.Errorf("default listen = %q, want loopback", got)
+	}
+}
+
+// --- groups -----------------------------------------------------------------
+
+func TestValidateRequiresAtLeastOneGroup(t *testing.T) {
+	c := Default()
+	c.Groups = nil
+	assertInvalid(t, c, "groups")
+}
+
+func TestValidateGroupName(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		c := Default()
+		c.Groups[0].Name = ""
+		assertInvalid(t, c, "groups[0].name")
+	})
+	t.Run("duplicate", func(t *testing.T) {
+		c := Default()
+		dup := groundGroup()
+		dup.Name = c.Groups[0].Name
+		c.Groups = append(c.Groups, dup)
+		assertInvalid(t, c, "groups[1].name")
+	})
+}
+
+func TestValidateGroupRequiresChannels(t *testing.T) {
+	c := Default()
+	c.Groups[0].Channels = nil
+	assertInvalid(t, c, "groups[0].channels")
+}
+
+func TestValidateGroupSampleRate(t *testing.T) {
 	for name, rate := range map[string]float64{
-		"zero":      0,
-		"negative":  -960_000,
-		"below min": MinSampleRate - 1,
-		"above max": MaxSampleRate + 1,
+		"zero":                         0,
+		"negative":                     -960_000,
+		"below min":                    MinSampleRate - 1,
+		"above max":                    MaxSampleRate + 1,
+		"not a multiple of audio rate": 1_234_567,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default()
-			c.SDR.SampleRate = rate
-			// Keep the channel inside whatever band this rate implies so the
-			// sample rate is the only thing under test.
-			c.Channels[0].Freq = c.SDR.CenterFreq - 150_000
-			assertInvalid(t, c, "sdr.sample_rate")
+			c.Groups[0].SampleRate = rate
+			assertInvalid(t, c, "groups[0].sample_rate")
 		})
 	}
 }
 
-func TestValidateCenterFreq(t *testing.T) {
+func TestValidateGroupCenterFreq(t *testing.T) {
 	for name, freq := range map[string]float64{
 		"zero":      0,
 		"negative":  -118e6,
@@ -95,41 +145,38 @@ func TestValidateCenterFreq(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default()
-			c.SDR.CenterFreq = freq
-			assertInvalid(t, c, "sdr.center_freq")
+			c.Groups[0].CenterFreq = freq
+			assertInvalid(t, c, "groups[0].center_freq")
 		})
 	}
 }
 
-// Integer decimation is a hard requirement of the DSP chain, so a sample rate
-// that is not an exact multiple of the audio rate must be rejected in config
-// rather than surfacing later as a confusing planner failure.
-func TestValidateRejectsNonIntegerDecimation(t *testing.T) {
+// Each group tunes independently, so one group's rate must not constrain
+// another's. A wide group alongside a narrow one has to be legal.
+func TestValidateGroupsMayUseDifferentSampleRates(t *testing.T) {
 	c := Default()
-	c.SDR.SampleRate = 1_234_567
-	c.Channels[0].Freq = c.SDR.CenterFreq - 150_000
-	assertInvalid(t, c, "sdr.sample_rate")
-}
+	wide := groundGroup()
+	wide.SampleRate = 2_400_000
+	c.Groups = append(c.Groups, wide)
 
-func TestValidateAcceptsIntegerDecimation(t *testing.T) {
-	for _, rate := range []float64{960_000, 1_024_000, 2_400_000, 2_048_000} {
-		c := Default()
-		c.SDR.SampleRate = rate
-		if err := c.Validate(); err != nil {
-			t.Errorf("sample rate %v should be valid: %v", rate, err)
-		}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("groups with different sample rates must be valid: %v", err)
 	}
 }
 
-func TestValidateChannelMustBeInsideCapturedBand(t *testing.T) {
+func TestValidateRealGroupLayout(t *testing.T) {
 	c := Default()
-	// 960 kS/s gives ±384 kHz of usable offset; 500 kHz is outside it.
-	c.Channels[0].Freq = c.SDR.CenterFreq + 500_000
-	assertInvalid(t, c, "channels[0].freq")
+	c.Groups = []GroupConfig{groundGroup()}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("the ground cluster layout must be valid: %v", err)
+	}
 }
 
-// Most SDR front ends show a DC spur at the local oscillator. A channel sitting
-// on it is a silent quality failure, so offset tuning is enforced, not advised.
+// --- channels within a group ------------------------------------------------
+
+// The tuner must never sit on a channel: the DC spur at the local oscillator
+// measured 60 dB above the noise floor, and a channel parked there is
+// unreceivable no matter what the rest of the chain does.
 func TestValidateChannelMustAvoidLocalOscillator(t *testing.T) {
 	for name, offset := range map[string]float64{
 		"exactly on LO": 0,
@@ -138,51 +185,56 @@ func TestValidateChannelMustAvoidLocalOscillator(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default()
-			c.Channels[0].Freq = c.SDR.CenterFreq + offset
-			assertInvalid(t, c, "channels[0].freq")
+			c.Groups[0].Channels[0].Freq = c.Groups[0].CenterFreq + offset
+			assertInvalid(t, c, "groups[0].channels[0].freq")
 		})
 	}
 }
 
-func TestValidateChannelNames(t *testing.T) {
-	t.Run("empty", func(t *testing.T) {
-		c := Default()
-		c.Channels[0].Name = ""
-		assertInvalid(t, c, "channels[0].name")
-	})
-	t.Run("duplicate", func(t *testing.T) {
-		c := Default()
-		c.Channels = append(c.Channels, ChannelConfig{
-			Name: c.Channels[0].Name, Freq: 118_400_000, Mode: ModeAM, SquelchDB: -35,
-		})
-		assertInvalid(t, c, "channels[1].name")
-	})
-}
-
-func TestValidateRequiresAtLeastOneChannel(t *testing.T) {
+func TestValidateChannelMustBeInsideItsGroupsBand(t *testing.T) {
 	c := Default()
-	c.Channels = nil
-	assertInvalid(t, c, "channels")
+	// 960 kS/s gives +/-384 kHz of usable offset; 500 kHz is outside it.
+	c.Groups[0].Channels[0].Freq = c.Groups[0].CenterFreq + 500_000
+	assertInvalid(t, c, "groups[0].channels[0].freq")
 }
 
-func TestValidateSquelch(t *testing.T) {
+func TestValidateChannelName(t *testing.T) {
+	c := Default()
+	c.Groups[0].Channels[0].Name = ""
+	assertInvalid(t, c, "groups[0].channels[0].name")
+}
+
+// Channel names are the keys in /ws/audio/{name}, so they must be unique across
+// the whole config, not merely within a group.
+func TestValidateChannelNamesAreUniqueAcrossGroups(t *testing.T) {
+	c := Default()
+	clash := groundGroup()
+	clash.Channels[0].Name = c.Groups[0].Channels[0].Name
+	c.Groups = append(c.Groups, clash)
+
+	assertInvalid(t, c, "groups[1].channels[0].name")
+}
+
+func TestValidateChannelMode(t *testing.T) {
+	c := Default()
+	c.Groups[0].Channels[0].Mode = "ssb"
+	assertInvalid(t, c, "groups[0].channels[0].mode")
+}
+
+func TestValidateChannelSquelch(t *testing.T) {
 	for name, db := range map[string]float64{
 		"too low":  MinSquelchDB - 1,
 		"too high": MaxSquelchDB + 1,
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := Default()
-			c.Channels[0].SquelchDB = db
-			assertInvalid(t, c, "channels[0].squelch_db")
+			c.Groups[0].Channels[0].SquelchDB = db
+			assertInvalid(t, c, "groups[0].channels[0].squelch_db")
 		})
 	}
 }
 
-func TestValidateMode(t *testing.T) {
-	c := Default()
-	c.Channels[0].Mode = "ssb"
-	assertInvalid(t, c, "channels[0].mode")
-}
+// --- device and server ------------------------------------------------------
 
 func TestValidateGain(t *testing.T) {
 	t.Run("out of range when manual", func(t *testing.T) {
@@ -191,9 +243,6 @@ func TestValidateGain(t *testing.T) {
 		c.SDR.Gain = MaxGain + 1
 		assertInvalid(t, c, "sdr.gain")
 	})
-	// Some front ends offer attenuation as negative gain: a LimeSDR Mini
-	// reports a range of -12 to 61 dB. Refusing negatives here would make a
-	// setting the hardware supports unconfigurable.
 	t.Run("allows negative gain the device may support", func(t *testing.T) {
 		c := Default()
 		c.SDR.Gain = -12
@@ -217,21 +266,14 @@ func TestValidateListenAddress(t *testing.T) {
 	assertInvalid(t, c, "server.listen")
 }
 
-// Exposure must always be a deliberate act, so the default binds to loopback.
-func TestDefaultListenIsLoopback(t *testing.T) {
-	if got := Default().Server.Listen; got != "127.0.0.1:8080" {
-		t.Errorf("default listen = %q, want loopback", got)
-	}
-}
-
 func TestValidateReportsEveryProblemAtOnce(t *testing.T) {
 	c := Default()
-	c.SDR.SampleRate = 0
 	c.Server.Listen = ""
-	c.Channels[0].Name = ""
+	c.Groups[0].Name = ""
+	c.Groups[0].Channels[0].Name = ""
 
 	got := fieldErrors(t, c.Validate())
-	for _, want := range []string{"sdr.sample_rate", "server.listen", "channels[0].name"} {
+	for _, want := range []string{"server.listen", "groups[0].name", "groups[0].channels[0].name"} {
 		found := false
 		for _, f := range got {
 			if f == want {
@@ -244,9 +286,28 @@ func TestValidateReportsEveryProblemAtOnce(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
+// --- lookup -----------------------------------------------------------------
+
+func TestGroupLookup(t *testing.T) {
+	c := Default()
+	c.Groups = append(c.Groups, groundGroup())
+
+	if g, ok := c.Group("Ground"); !ok || g.CenterFreq != 121_805_000 {
+		t.Errorf("Group(\"Ground\") = %+v, %v", g, ok)
+	}
+	if _, ok := c.Group("Nowhere"); ok {
+		t.Error("Group of an unknown name must report false")
+	}
+}
+
+// --- the legacy single-group form -------------------------------------------
+
+// Configs written before groups existed put channels at the top level and the
+// tuning in sdr. They must keep working, folded into a single implicit group.
+func TestLoadFoldsLegacyFlatConfigIntoOneGroup(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	yaml := "channels:\n  - name: Tower\n    freq: 118100000\n"
+	yaml := "sdr:\n  center_freq: 118250000\n  sample_rate: 960000\n" +
+		"channels:\n  - name: Tower\n    freq: 118100000\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -255,17 +316,91 @@ func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if c.SDR.SampleRate != Default().SDR.SampleRate {
-		t.Errorf("sample rate = %v, want default %v", c.SDR.SampleRate, Default().SDR.SampleRate)
+	if len(c.Groups) != 1 {
+		t.Fatalf("got %d groups, want 1 synthesised from the flat form", len(c.Groups))
 	}
-	if c.Channels[0].Mode != ModeAM {
-		t.Errorf("mode = %q, want default %q", c.Channels[0].Mode, ModeAM)
+	g := c.Groups[0]
+	if g.CenterFreq != 118_250_000 || g.SampleRate != 960_000 {
+		t.Errorf("group tuning = %.0f @ %.0f, want the sdr values", g.CenterFreq, g.SampleRate)
+	}
+	if len(g.Channels) != 1 || g.Channels[0].Name != "Tower" {
+		t.Errorf("group channels = %+v, want the top-level channel", g.Channels)
+	}
+}
+
+// Both forms at once is ambiguous about which tuning applies, so it is refused
+// rather than silently preferring one.
+func TestLoadRejectsBothFormsTogether(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "channels:\n  - name: Tower\n    freq: 118100000\n" +
+		"groups:\n  - name: G\n    center_freq: 121805000\n    sample_rate: 960000\n" +
+		"    channels:\n      - name: Ground\n        freq: 121902000\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("a config using both the flat and grouped forms must be rejected")
+	}
+}
+
+// --- loading ----------------------------------------------------------------
+
+func TestLoadGroupedConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "groups:\n" +
+		"  - name: Tower\n    center_freq: 118250000\n    sample_rate: 960000\n" +
+		"    channels:\n      - name: Tower\n        freq: 118100000\n" +
+		"  - name: Ground\n    center_freq: 121805000\n    sample_rate: 960000\n" +
+		"    channels:\n      - name: Ground\n        freq: 121902000\n" +
+		"      - name: Delivery\n        freq: 121925000\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(c.Groups) != 2 {
+		t.Fatalf("got %d groups, want 2", len(c.Groups))
+	}
+	if got := len(c.Groups[1].Channels); got != 2 {
+		t.Errorf("second group has %d channels, want 2", got)
+	}
+	// Per-channel defaults must still apply inside groups.
+	if c.Groups[0].Channels[0].Mode != ModeAM {
+		t.Errorf("mode = %q, want the default %q", c.Groups[0].Channels[0].Mode, ModeAM)
+	}
+	if c.Groups[0].Channels[0].SquelchDB != DefaultSquelchDB {
+		t.Errorf("squelch = %v, want the default %v",
+			c.Groups[0].Channels[0].SquelchDB, DefaultSquelchDB)
+	}
+}
+
+func TestLoadAppliesDeviceDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	yaml := "groups:\n  - name: Tower\n    center_freq: 118250000\n    sample_rate: 960000\n" +
+		"    channels:\n      - name: Tower\n        freq: 118100000\n"
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if c.Audio.Rate != DefaultAudioRate {
+		t.Errorf("audio rate = %v, want default %v", c.Audio.Rate, DefaultAudioRate)
+	}
+	if c.Server.Listen != Default().Server.Listen {
+		t.Errorf("listen = %q, want default", c.Server.Listen)
 	}
 }
 
 func TestLoadValidates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	yaml := "sdr:\n  sample_rate: 0\nchannels:\n  - name: Tower\n    freq: 118100000\n"
+	yaml := "groups:\n  - name: Bad\n    center_freq: 118250000\n    sample_rate: 0\n" +
+		"    channels:\n      - name: Tower\n        freq: 118100000\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +411,9 @@ func TestLoadValidates(t *testing.T) {
 
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	yaml := "sdr:\n  smaple_rate: 960000\nchannels:\n  - name: Tower\n    freq: 118100000\n"
+	yaml := "sdr:\n  smaple_rate: 960000\n" +
+		"groups:\n  - name: Tower\n    center_freq: 118250000\n    sample_rate: 960000\n" +
+		"    channels:\n      - name: Tower\n        freq: 118100000\n"
 	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -288,5 +425,17 @@ func TestLoadRejectsUnknownKeys(t *testing.T) {
 func TestLoadMissingFile(t *testing.T) {
 	if _, err := Load(filepath.Join(t.TempDir(), "absent.yaml")); err == nil {
 		t.Fatal("Load must fail on a missing file")
+	}
+}
+
+// The shipped configuration must actually be valid; it is the first thing a
+// new user runs.
+func TestShippedConfigIsValid(t *testing.T) {
+	c, err := Load("../../configs/config.yaml")
+	if err != nil {
+		t.Fatalf("configs/config.yaml must load and validate: %v", err)
+	}
+	if len(c.Groups) < 1 {
+		t.Error("the shipped config should define at least one group")
 	}
 }

@@ -10,16 +10,6 @@ sdr:
   # Examples: driver=rtlsdr | driver=lime | driver=airspy
   driver: "driver=lime"
 
-  # 960 kS/s is a native RTL-SDR rate and is gentle on a Pi's shared USB bus,
-  # while still covering a 300 kHz span of airband.
-  sample_rate: 960000
-
-  # Centre the tuner between the channels of interest and, critically, NOT on
-  # any of them: most front ends show a DC spur at the local oscillator, and a
-  # channel parked there is a silent quality failure. 118.25 MHz puts tower
-  # (118.1) and ground (118.4) at -150 and +150 kHz.
-  center_freq: 118250000
-
   gain: 61
   auto_gain: false
 
@@ -35,7 +25,7 @@ sdr:
 
 audio:
   # 8 kHz is ample for AM airband voice, which is bandlimited to ~3.4 kHz.
-  # The sample rate above must be an exact multiple of this.
+  # Every group's sample_rate must be an exact multiple of this.
   rate: 8000
 
 server:
@@ -44,23 +34,40 @@ server:
   # Tailscale Serve in front rather than binding to 0.0.0.0.
   listen: "127.0.0.1:8080"
 
-channels:
+# The radio covers one group at a time. Every channel inside the active group
+# is demodulated in parallel; switching groups retunes the tuner.
+#
+# Each group's center_freq sits deliberately BETWEEN its channels, never on one:
+# the DC spur at the local oscillator measured 60 dB above the noise floor here,
+# and a channel parked on it is unreceivable. Validation enforces a 12.5 kHz
+# minimum separation and a channel must stay within +/-40% of the sample rate.
+groups:
   - name: Tower
-    freq: 118100000
-    mode: am
-    # Carrier level below which the channel is muted. Airband is silent most of
-    # the time; without squelch the AGC would chase the noise floor to full gain.
-    #
-    # This is not a guess: on a measured capture here the channel noise floor
-    # sat at about -67 dBFS (the squelch jams permanently open at -68) and
-    # traffic peaked around -59, so -62 sits in the middle of a narrow window.
-    # Set it per site. Run `airport-sdr replay` on a capture: it prints the peak
-    # channel level, and the threshold wants to be a few dB below that.
-    squelch_db: -62
+    center_freq: 118250000
+    sample_rate: 960000
+    channels:
+      # Verified receiving live traffic.
+      - {name: Tower, freq: 118100000, squelch_db: -62}   # -150 kHz
 
-  # Both channels fit inside one capture at the sample rate above. Uncomment to
-  # add ground without changing anything else.
-  # - name: Ground
-  #   freq: 118400000
-  #   mode: am
-  #   squelch_db: -35
+  # NOTE: the frequencies below are taken from a published chart and have NOT
+  # been confirmed on air yet. If they are European 8.33 kHz channel
+  # DESIGNATORS rather than carrier frequencies, the real carriers sit a few kHz
+  # away — enough to matter against a +/-5 kHz channel filter, and the symptom
+  # would be muffled or missing audio rather than an obvious failure.
+  # Confirm with:  airport-sdr record --group Ground && airport-sdr spectrum --group Ground
+  - name: Ground
+    center_freq: 121805000
+    sample_rate: 960000
+    channels:
+      - {name: Apron S,  freq: 121755000, squelch_db: -62}   #  -50 kHz
+      - {name: Apron N,  freq: 121855000, squelch_db: -62}   #  +50 kHz
+      - {name: Ground,   freq: 121902000, squelch_db: -62}   #  +97 kHz
+      - {name: Delivery, freq: 121925000, squelch_db: -62}   # +120 kHz
+
+  - name: Approach
+    center_freq: 125640000
+    sample_rate: 960000
+    channels:
+      - {name: Approach,  freq: 125325000, squelch_db: -62}  # -315 kHz
+      - {name: ATIS,      freq: 125725000, squelch_db: -62}  #  +85 kHz
+      - {name: Departure, freq: 125950000, squelch_db: -62}  # +310 kHz

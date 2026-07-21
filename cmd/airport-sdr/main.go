@@ -104,12 +104,19 @@ func validate(path string) error {
 		return err
 	}
 	fmt.Printf("%s is valid\n", path)
-	fmt.Printf("  sdr      %.4f MHz @ %.3f MS/s\n", cfg.SDR.CenterFreq/1e6, cfg.SDR.SampleRate/1e6)
 	fmt.Printf("  audio    %.0f Hz\n", cfg.Audio.Rate)
 	fmt.Printf("  listen   %s\n", cfg.Server.Listen)
-	for _, ch := range cfg.Channels {
-		fmt.Printf("  channel  %-10s %.4f MHz  %s  squelch %.0f dBFS  (%+.1f kHz from centre)\n",
-			ch.Name, ch.Freq/1e6, ch.Mode, ch.SquelchDB, (ch.Freq-cfg.SDR.CenterFreq)/1e3)
+
+	// The radio covers one group at a time; every channel inside the active
+	// group is demodulated in parallel.
+	for _, g := range cfg.Groups {
+		fmt.Printf("\n  group %s: %.4f MHz @ %.3f MS/s (usable +/-%.0f kHz)\n",
+			g.Name, g.CenterFreq/1e6, g.SampleRate/1e6,
+			g.SampleRate*config.UsableBandwidth/2/1e3)
+		for _, ch := range g.Channels {
+			fmt.Printf("    %-10s %.4f MHz  %s  squelch %.0f dBFS  (%+.1f kHz from centre)\n",
+				ch.Name, ch.Freq/1e6, ch.Mode, ch.SquelchDB, (ch.Freq-g.CenterFreq)/1e3)
+		}
 	}
 	return nil
 }

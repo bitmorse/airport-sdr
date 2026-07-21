@@ -23,21 +23,69 @@ import (
 // latency low without making the per-block overhead significant.
 const captureBlockDuration = 20 * time.Millisecond
 
-func soapyOptions(cfg config.Config) sdr.SoapyOptions {
+// soapyOptions builds device settings for one group's tuning. Device-level
+// settings are shared; the centre frequency and sample rate come from the group.
+func soapyOptions(cfg config.Config, g config.GroupConfig) sdr.SoapyOptions {
 	return sdr.SoapyOptions{
 		DeviceArgs: cfg.SDR.Driver,
-		SampleRate: cfg.SDR.SampleRate,
-		CenterFreq: cfg.SDR.CenterFreq,
+		SampleRate: g.SampleRate,
+		CenterFreq: g.CenterFreq,
 		Gain:       cfg.SDR.Gain,
 		AutoGain:   cfg.SDR.AutoGain,
 		Antenna:    cfg.SDR.Antenna,
 		PPM:        cfg.SDR.PPM,
-		BlockSize:  blockSize(cfg),
+		BlockSize:  blockSize(g.SampleRate),
 	}
 }
 
-func blockSize(cfg config.Config) int {
-	return int(cfg.SDR.SampleRate * captureBlockDuration.Seconds())
+func blockSize(sampleRate float64) int {
+	return int(sampleRate * captureBlockDuration.Seconds())
+}
+
+// activeGroup resolves which group a command should work with: the one named,
+// or the first configured. Validation guarantees at least one group exists.
+func activeGroup(cfg config.Config, name string) (config.GroupConfig, error) {
+	if name == "" {
+		return cfg.Groups[0], nil
+	}
+	g, ok := cfg.Group(name)
+	if !ok {
+		return config.GroupConfig{}, fmt.Errorf(
+			"no group named %q; configured groups are %s", name, groupNames(cfg))
+	}
+	return g, nil
+}
+
+func groupNames(cfg config.Config) string {
+	names := make([]string, 0, len(cfg.Groups))
+	for _, g := range cfg.Groups {
+		names = append(names, g.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+// findChannel locates a channel by name across every group, returning the group
+// that covers it. An empty name takes the first channel of the chosen group.
+func findChannel(cfg config.Config, groupName, chName string) (
+	config.GroupConfig, config.ChannelConfig, error,
+) {
+	if chName == "" {
+		g, err := activeGroup(cfg, groupName)
+		if err != nil {
+			return config.GroupConfig{}, config.ChannelConfig{}, err
+		}
+		return g, g.Channels[0], nil
+	}
+
+	for _, g := range cfg.Groups {
+		for _, ch := range g.Channels {
+			if ch.Name == chName {
+				return g, ch, nil
+			}
+		}
+	}
+	return config.GroupConfig{}, config.ChannelConfig{},
+		fmt.Errorf("no channel named %q in any group", chName)
 }
 
 // signalContext cancels on SIGINT or SIGTERM so a capture can be stopped early
@@ -64,8 +112,11 @@ func probeCmd(cfgPath string, _ []string) error {
 	fmt.Printf("sample rates  %s\n", describe(caps.SampleRates))
 	fmt.Printf("frequencies   %s\n", describe(caps.Frequencies))
 
-	fmt.Printf("\nconfigured: antenna %q, gain %v, %.3f MS/s at %.4f MHz\n",
-		cfg.SDR.Antenna, cfg.SDR.Gain, cfg.SDR.SampleRate/1e6, cfg.SDR.CenterFreq/1e6)
+	fmt.Printf("\nconfigured: antenna %q, gain %v\n", cfg.SDR.Antenna, cfg.SDR.Gain)
+	for _, g := range cfg.Groups {
+		fmt.Printf("  group %-10s %.4f MHz @ %.3f MS/s, %d channel(s)\n",
+			g.Name, g.CenterFreq/1e6, g.SampleRate/1e6, len(g.Channels))
+	}
 	if cfg.SDR.Antenna == "" && len(caps.Antennas) > 1 {
 		fmt.Println("\nno antenna is configured, so the driver picks one. on a device with\n" +
 			"several ports that is a common cause of a receiver that hears nothing:\n" +
@@ -91,6 +142,7 @@ func recordCmd(cfgPath string, args []string) error {
 	fs := flag.NewFlagSet("record", flag.ContinueOnError)
 	out := fs.String("out", "capture.cf32", "file to write raw IQ to")
 	duration := fs.Duration("duration", 60*time.Second, "how long to record")
+	group := fs.String("group", "", "which group's tuning to capture (default the first)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -99,8 +151,12 @@ func recordCmd(cfgPath string, args []string) error {
 	if err != nil {
 		return err
 	}
+	g, err := activeGroup(cfg, *group)
+	if err != nil {
+		return err
+	}
 
-	src, err := sdr.NewSoapySource(soapyOptions(cfg))
+	src, err := sdr.NewSoapySource(soapyOptions(cfg, g))
 	if err != nil {
 		return err
 	}
@@ -112,8 +168,9 @@ func recordCmd(cfgPath string, args []string) error {
 	}
 	defer f.Close() //nolint:errcheck // flushed explicitly below
 
-	slog.Info("recording", "device", src.Describe(), "out", *out, "duration", *duration)
-	return capture(src, f, *duration, blockSize(cfg))
+	slog.Info("recording", "device", src.Describe(), "group", g.Name,
+		"out", *out, "duration", *duration)
+	return capture(src, f, *duration, blockSize(g.SampleRate))
 }
 
 func capture(src sdr.Source, f *os.File, duration time.Duration, block int) error {
@@ -162,6 +219,7 @@ func spectrumCmd(cfgPath string, args []string) error {
 	in := fs.String("in", "testdata/capture.cf32", "raw IQ file to analyse")
 	size := fs.Int("size", 4096, "FFT size (power of two)")
 	rows := fs.Int("rows", 64, "how many frequency rows to print")
+	group := fs.String("group", "", "which group's tuning the capture used (default the first)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -170,14 +228,18 @@ func spectrumCmd(cfgPath string, args []string) error {
 	if err != nil {
 		return err
 	}
+	g, err := activeGroup(cfg, *group)
+	if err != nil {
+		return err
+	}
 
-	spec, err := dsp.NewSpectrum(*size, cfg.SDR.SampleRate)
+	spec, err := dsp.NewSpectrum(*size, g.SampleRate)
 	if err != nil {
 		return err
 	}
 	src, err := sdr.NewFileSource(sdr.FileOptions{
-		Path: *in, SampleRate: cfg.SDR.SampleRate,
-		CenterFreq: cfg.SDR.CenterFreq, BlockSize: *size,
+		Path: *in, SampleRate: g.SampleRate,
+		CenterFreq: g.CenterFreq, BlockSize: *size,
 	})
 	if err != nil {
 		return err
@@ -200,14 +262,14 @@ func spectrumCmd(cfgPath string, args []string) error {
 		b.Release()
 	}
 
-	fmt.Printf("%d frames of %d bins across %.3f MS/s centred on %.4f MHz\n\n",
-		frames, *size, cfg.SDR.SampleRate/1e6, cfg.SDR.CenterFreq/1e6)
-	printSpectrum(spec, cfg, *rows)
+	fmt.Printf("%d frames of %d bins across %.3f MS/s centred on %.4f MHz (group %s)\n\n",
+		frames, *size, g.SampleRate/1e6, g.CenterFreq/1e6, g.Name)
+	printSpectrum(spec, g, *rows)
 	return nil
 }
 
 // printSpectrum draws the averaged and max-hold levels as a text chart.
-func printSpectrum(spec *dsp.Spectrum, cfg config.Config, rows int) {
+func printSpectrum(spec *dsp.Spectrum, g config.GroupConfig, rows int) {
 	avg, hold := spec.PowerDB(), spec.MaxHoldDB()
 	perRow := spec.Bins() / rows
 
@@ -225,10 +287,10 @@ func printSpectrum(spec *dsp.Spectrum, cfg config.Config, rows int) {
 			rowAvg, rowHold = math.Max(rowAvg, avg[i]), math.Max(rowHold, hold[i])
 		}
 
-		freq := cfg.SDR.CenterFreq + spec.BinFreq(start+perRow/2)
+		freq := g.CenterFreq + spec.BinFreq(start+perRow/2)
 		fmt.Printf("%9.4f MHz %7.1f %7.1f |%s %s\n",
 			freq/1e6, rowAvg, rowHold,
-			bar(rowAvg, rowHold, lo, hi), annotate(freq, cfg, perRow, spec))
+			bar(rowAvg, rowHold, lo, hi), annotate(freq, g, perRow, spec))
 	}
 }
 
@@ -261,17 +323,17 @@ func bar(avg, hold, lo, hi float64) string {
 
 // annotate marks the rows a reader needs to find: the configured channels and
 // the local oscillator, where a DC spur is expected.
-func annotate(freq float64, cfg config.Config, perRow int, spec *dsp.Spectrum) string {
+func annotate(freq float64, g config.GroupConfig, perRow int, spec *dsp.Spectrum) string {
 	// A row covers a band, not a point. Comparing against the row centre alone
 	// means a channel landing near a row boundary is never labelled, which is
 	// exactly what happened the first time this ran.
 	rowWidth := math.Abs(spec.BinFreq(perRow) - spec.BinFreq(0))
 	covers := func(target float64) bool { return math.Abs(freq-target) <= rowWidth }
 
-	if covers(cfg.SDR.CenterFreq) {
+	if covers(g.CenterFreq) {
 		return "<= LO (DC spur expected here)"
 	}
-	for _, ch := range cfg.Channels {
+	for _, ch := range g.Channels {
 		if covers(ch.Freq) {
 			return "<= " + ch.Name
 		}
@@ -286,6 +348,7 @@ func replayCmd(cfgPath string, args []string) error {
 	in := fs.String("in", "capture.cf32", "raw IQ file to replay")
 	out := fs.String("out", "", "WAV file to write (default <channel>.wav)")
 	channel := fs.String("channel", "", "channel name to demodulate (default the first)")
+	group := fs.String("group", "", "which group the capture was recorded with")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -294,7 +357,7 @@ func replayCmd(cfgPath string, args []string) error {
 	if err != nil {
 		return err
 	}
-	chCfg, err := pickChannel(cfg, *channel)
+	g, chCfg, err := findChannel(cfg, *group, *channel)
 	if err != nil {
 		return err
 	}
@@ -302,28 +365,20 @@ func replayCmd(cfgPath string, args []string) error {
 		*out = chCfg.Name + ".wav"
 	}
 
-	return replayChannel(cfg, chCfg, *in, *out)
+	return replayChannel(cfg, g, chCfg, *in, *out)
 }
 
-func pickChannel(cfg config.Config, name string) (config.ChannelConfig, error) {
-	if name == "" {
-		return cfg.Channels[0], nil
-	}
-	for _, c := range cfg.Channels {
-		if c.Name == name {
-			return c, nil
-		}
-	}
-	return config.ChannelConfig{}, fmt.Errorf("no channel named %q in the config", name)
-}
-
-func replayChannel(cfg config.Config, chCfg config.ChannelConfig, in, out string) error {
-	block := blockSize(cfg)
+// replayChannel demodulates one channel from a capture. The capture must have
+// been recorded with the tuning of the group that owns the channel.
+func replayChannel(cfg config.Config, g config.GroupConfig,
+	chCfg config.ChannelConfig, in, out string,
+) error {
+	block := blockSize(g.SampleRate)
 
 	src, err := sdr.NewFileSource(sdr.FileOptions{
 		Path:       in,
-		SampleRate: cfg.SDR.SampleRate,
-		CenterFreq: cfg.SDR.CenterFreq,
+		SampleRate: g.SampleRate,
+		CenterFreq: g.CenterFreq,
 		BlockSize:  block,
 	})
 	if err != nil {
@@ -333,8 +388,8 @@ func replayChannel(cfg config.Config, chCfg config.ChannelConfig, in, out string
 
 	ch, err := dsp.NewChannel(dsp.ChannelOptions{
 		Name:            chCfg.Name,
-		Offset:          chCfg.Freq - cfg.SDR.CenterFreq,
-		InputRate:       cfg.SDR.SampleRate,
+		Offset:          chCfg.Freq - g.CenterFreq,
+		InputRate:       g.SampleRate,
 		AudioRate:       cfg.Audio.Rate,
 		SquelchDB:       chCfg.SquelchDB,
 		MaxInputSamples: block,
@@ -349,8 +404,8 @@ func replayChannel(cfg config.Config, chCfg config.ChannelConfig, in, out string
 	}
 	defer f.Close() //nolint:errcheck // closed after the writer below
 
-	slog.Info("replaying", "in", in, "channel", chCfg.Name,
-		"offset_khz", (chCfg.Freq-cfg.SDR.CenterFreq)/1e3, "out", out)
+	slog.Info("replaying", "in", in, "group", g.Name, "channel", chCfg.Name,
+		"offset_khz", (chCfg.Freq-g.CenterFreq)/1e3, "out", out)
 
 	return demodulateToWAV(src, ch, f, int(cfg.Audio.Rate))
 }

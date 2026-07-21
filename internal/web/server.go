@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/bitmorse/airport-sdr/internal/stream"
+	"github.com/coder/websocket"
 )
 
 //go:embed static

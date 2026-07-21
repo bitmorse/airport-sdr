@@ -46,6 +46,7 @@ func (c *channelRuntime) state() web.ChannelState {
 func serveCmd(cfgPath, listen string, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	iq := fs.String("iq", "", "replay this .cf32 capture instead of using the radio")
+	group := fs.String("group", "", "which channel group to receive (default the first)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -55,13 +56,19 @@ func serveCmd(cfgPath, listen string, args []string) error {
 		return err
 	}
 
-	src, err := openSource(cfg, *iq)
+	// One group at a time until switching lands; the first is the default.
+	g, err := activeGroup(cfg, *group)
+	if err != nil {
+		return err
+	}
+
+	src, err := openSource(cfg, g, *iq)
 	if err != nil {
 		return err
 	}
 	defer src.Close() //nolint:errcheck // shutting down anyway
 
-	channels, err := buildChannels(cfg)
+	channels, err := buildChannels(cfg, g)
 	if err != nil {
 		return err
 	}
@@ -83,38 +90,39 @@ func serveCmd(cfgPath, listen string, args []string) error {
 	}
 	go runDSP(blocks, channels)
 
-	slog.Info("receiver running", "source", src.Describe(), "channels", len(channels))
+	slog.Info("receiver running", "source", src.Describe(),
+		"group", g.Name, "channels", len(channels))
 	return srv.ListenAndServe(ctx, cfg.Server.Listen)
 }
 
 // openSource picks between the radio and a recorded capture. Replaying a
 // capture makes the whole server testable, and demonstrable, with no hardware.
-func openSource(cfg config.Config, iqFile string) (sdr.Source, error) {
+func openSource(cfg config.Config, g config.GroupConfig, iqFile string) (sdr.Source, error) {
 	if iqFile == "" {
-		return sdr.NewSoapySource(soapyOptions(cfg))
+		return sdr.NewSoapySource(soapyOptions(cfg, g))
 	}
 	return sdr.NewFileSource(sdr.FileOptions{
 		Path:       iqFile,
-		SampleRate: cfg.SDR.SampleRate,
-		CenterFreq: cfg.SDR.CenterFreq,
-		BlockSize:  blockSize(cfg),
+		SampleRate: g.SampleRate,
+		CenterFreq: g.CenterFreq,
+		BlockSize:  blockSize(g.SampleRate),
 		Loop:       true,
 		Realtime:   true, // pace it like a radio, so listening is realistic
 	})
 }
 
-func buildChannels(cfg config.Config) ([]*channelRuntime, error) {
-	block := blockSize(cfg)
+func buildChannels(cfg config.Config, g config.GroupConfig) ([]*channelRuntime, error) {
+	block := blockSize(g.SampleRate)
 	// Audio samples produced per input block, plus a little slack for the
 	// filter boundaries.
-	maxAudio := int(float64(block)*cfg.Audio.Rate/cfg.SDR.SampleRate) + 8
+	maxAudio := int(float64(block)*cfg.Audio.Rate/g.SampleRate) + 8
 
-	out := make([]*channelRuntime, 0, len(cfg.Channels))
-	for _, ch := range cfg.Channels {
+	out := make([]*channelRuntime, 0, len(g.Channels))
+	for _, ch := range g.Channels {
 		chain, err := dsp.NewChannel(dsp.ChannelOptions{
 			Name:            ch.Name,
-			Offset:          ch.Freq - cfg.SDR.CenterFreq,
-			InputRate:       cfg.SDR.SampleRate,
+			Offset:          ch.Freq - g.CenterFreq,
+			InputRate:       g.SampleRate,
 			AudioRate:       cfg.Audio.Rate,
 			SquelchDB:       ch.SquelchDB,
 			MaxInputSamples: block,
