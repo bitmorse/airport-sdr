@@ -1,0 +1,44 @@
+[Unit]
+Description=airport-sdr airband receiver and streamer
+Documentation=https://github.com/octanis/airport-sdr
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/airport-sdr --config /etc/airport-sdr/config.yaml serve
+Restart=on-failure
+RestartSec=5s
+
+# USB device access for the SDR. DynamicUser is deliberately not used: the
+# service needs a stable identity in plugdev to reach the radio.
+User=airport-sdr
+Group=airport-sdr
+SupplementaryGroups=plugdev
+
+# The receiver reads one config file and opens one USB device. Nothing else on
+# the filesystem needs to be reachable, which matters on an unattended box.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Recordings, if enabled, go here.
+StateDirectory=airport-sdr
+
+# A runaway on a 512 MB device should be killed, not swap the box to death.
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,50 @@
+version: "2"
+
+# Static analysis is the enforcement arm of the Power of 10 rules this project
+# follows. Warnings are errors: `make lint` failing is a broken build.
+
+linters:
+  enable:
+    - errcheck      # rule 7: every return value is checked
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - funlen        # rule 4: functions stay under a page
+    - gocyclo       # rule 1: no baroque control flow
+    - gocritic      # rule 6: scope and general correctness
+    - revive
+    - bodyclose
+    - errorlint
+    - nilerr
+    - unconvert
+    - misspell
+
+  settings:
+    funlen:
+      lines: 60     # rule 4
+      statements: 45
+    gocyclo:
+      min-complexity: 15
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment  # readability wins over a few bytes of padding here
+
+  exclusions:
+    rules:
+      # Test files trade length for coverage of many cases; the length rules
+      # would push table-driven tests into needless indirection.
+      - path: _test\.go
+        linters:
+          - funlen
+          - gocyclo
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt

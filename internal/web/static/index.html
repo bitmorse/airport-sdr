@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>airport-sdr</title>
+<style>
+  :root {
+    --bg: #14171c; --panel: #1c2027; --line: #2c323c;
+    --text: #e6e9ef; --dim: #8b93a1; --accent: #4a9eff; --live: #34d17d;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6f9; --panel: #fff; --line: #dde2ea;
+      --text: #1a1d23; --dim: #666e7d; --accent: #0b6bcb; --live: #12904f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem 1rem; background: var(--bg); color: var(--text);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 44rem; margin: 0 auto; }
+  h1 { font-size: 1.15rem; margin: 0 0 .25rem; letter-spacing: -.01em; }
+  .sub { color: var(--dim); font-size: .85rem; margin-bottom: 1.5rem; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 1rem; margin-bottom: .75rem;
+  }
+  .row { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+  .name { font-weight: 600; }
+  .freq { color: var(--dim); font-variant-numeric: tabular-nums; font-size: .9rem; }
+  .spacer { flex: 1 1 auto; }
+  button {
+    font: inherit; font-weight: 500; color: #fff; background: var(--accent);
+    border: 0; border-radius: 7px; padding: .45rem 1rem; cursor: pointer;
+  }
+  button.stop { background: #d1495b; }
+  button:disabled { opacity: .5; cursor: default; }
+  .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--line); flex: none; }
+  .dot.open { background: var(--live); box-shadow: 0 0 8px var(--live); }
+  .meter {
+    height: 6px; background: var(--line); border-radius: 3px;
+    overflow: hidden; margin-top: .85rem;
+  }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .18s; }
+  .stats {
+    margin-top: .6rem; color: var(--dim); font-size: .8rem;
+    font-variant-numeric: tabular-nums; display: flex; gap: 1.25rem; flex-wrap: wrap;
+  }
+  .note {
+    color: var(--dim); font-size: .82rem; margin-top: 1.25rem;
+    border-top: 1px solid var(--line); padding-top: 1rem;
+  }
+  .note a { color: var(--accent); }
+  .warn { color: #e0a458; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .95em; }
+</style>
+</head>
+<body>
+<main>
+  <h1>airport-sdr</h1>
+  <div class="sub" id="source">connecting…</div>
+  <div id="channels"></div>
+  <div class="note" id="note"></div>
+</main>
+
+<script>
+// Audio is streamed as G.711 mu-law: one byte per sample at 8 kHz, which is
+// 64 kbit/s and needs no codec support in the browser at all. The expansion
+// table below is built once and turns each byte back into a float.
+const ULAW = (() => {
+  const table = new Float32Array(256);
+  for (let i = 0; i < 256; i++) {
+    const u = ~i & 0xff;
+    const exponent = (u >> 4) & 0x07;
+    const mantissa = ((u & 0x0f) << 3) + 0x84;
+    let sample = (mantissa << exponent) - 0x84;
+    if (u & 0x80) sample = -sample;
+    table[i] = sample / 32768;
+  }
+  return table;
+})();
+
+// AudioWorklet needs a secure context. Over plain http to a LAN address it is
+// unavailable, so the page falls back to the WAV endpoint, which any browser
+// can play with no JavaScript involved.
+const canUseWorklet = window.isSecureContext && !!(window.AudioContext || window.webkitAudioContext);
+
+const state = { active: null, ctx: null, node: null, socket: null, audio: null };
+
+async function boot() {
+  const note = document.getElementById('note');
+  let channels;
+  try {
+    channels = await (await fetch('/api/channels')).json();
+  } catch (err) {
+    document.getElementById('source').textContent = 'cannot reach the receiver';
+    return;
+  }
+
+  document.getElementById('channels').innerHTML = channels.map((c) => `
+    <div class="card" data-name="${c.name}">
+      <div class="row">
+        <span class="dot" data-role="squelch"></span>
+        <span class="name">${c.name}</span>
+        <span class="freq">${(c.freq / 1e6).toFixed(3)} MHz</span>
+        <span class="spacer"></span>
+        <button data-role="listen">Listen</button>
+      </div>
+      <div class="meter"><i data-role="level"></i></div>
+      <div class="stats">
+        <span data-role="level-text">–</span>
+        <span data-role="listeners"></span>
+        <span data-role="buffer"></span>
+      </div>
+    </div>`).join('');
+
+  for (const card of document.querySelectorAll('.card')) {
+    card.querySelector('[data-role=listen]')
+        .addEventListener('click', () => toggle(card.dataset.name));
+  }
+
+  note.innerHTML = canUseWorklet
+    ? 'Low-latency stream: mu-law over WebSocket, 64 kbit/s while a transmission ' +
+      'is on air and nothing at all between them, so the average is far lower. ' +
+      'Any channel can also be played by a plain audio player at ' +
+      '<code>/stream/&lt;name&gt;.wav</code>, which stays continuous.'
+    : '<span class="warn">Live low-latency audio needs a secure context.</span> ' +
+      'Over plain http this page falls back to <code>/stream/&lt;name&gt;.wav</code>, ' +
+      'which works everywhere but adds a few seconds of delay. Reach the receiver ' +
+      'over https (Tailscale Serve does this for you) for the low-latency path.';
+
+  poll();
+  setInterval(poll, 1000);
+}
+
+function toggle(name) {
+  if (state.active === name) { stop(); return; }
+  stop();
+  canUseWorklet ? startWorklet(name) : startFallback(name);
+}
+
+function stop() {
+  if (state.socket) { state.socket.close(); state.socket = null; }
+  if (state.node) { state.node.disconnect(); state.node = null; }
+  if (state.ctx) { state.ctx.close(); state.ctx = null; }
+  if (state.audio) { state.audio.pause(); state.audio.src = ''; state.audio = null; }
+
+  if (state.active) {
+    const card = cardFor(state.active);
+    if (card) {
+      card.querySelector('[data-role=listen]').textContent = 'Listen';
+      card.querySelector('[data-role=listen]').classList.remove('stop');
+      card.querySelector('[data-role=buffer]').textContent = '';
+    }
+  }
+  state.active = null;
+}
+
+async function startWorklet(name) {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  // Asking for 8 kHz avoids resampling entirely where the browser allows it;
+  // where it does not, the worklet interpolates using the ratio below.
+  const ctx = new AC({ sampleRate: 8000, latencyHint: 'interactive' });
+  await ctx.audioWorklet.addModule('/static/pcm-worklet.js');
+
+  const node = new AudioWorkletNode(ctx, 'pcm-player', {
+    processorOptions: { ratio: 8000 / ctx.sampleRate, capacity: 16384, prebuffer: 480 },
+  });
+  node.connect(ctx.destination);
+
+  const card = cardFor(name);
+  node.port.onmessage = (e) => {
+    const el = card && card.querySelector('[data-role=buffer]');
+    if (el) el.textContent = `buffer ${(e.data.buffered * 1000).toFixed(0)} ms`;
+  };
+
+  const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/audio/${encodeURIComponent(name)}`);
+  socket.binaryType = 'arraybuffer';
+  socket.onmessage = (event) => {
+    const bytes = new Uint8Array(event.data);
+    const samples = new Float32Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) samples[i] = ULAW[bytes[i]];
+    node.port.postMessage(samples);
+  };
+  socket.onclose = () => { if (state.active === name) stop(); };
+
+  Object.assign(state, { active: name, ctx, node, socket });
+  markListening(name);
+  if (ctx.state === 'suspended') await ctx.resume();
+}
+
+function startFallback(name) {
+  const audio = new Audio(`/stream/${encodeURIComponent(name)}.wav`);
+  audio.play().catch(() => {});
+  Object.assign(state, { active: name, audio });
+  markListening(name);
+}
+
+function markListening(name) {
+  const button = cardFor(name).querySelector('[data-role=listen]');
+  button.textContent = 'Stop';
+  button.classList.add('stop');
+}
+
+function cardFor(name) {
+  return document.querySelector(`.card[data-name="${CSS.escape(name)}"]`);
+}
+
+async function poll() {
+  let status;
+  try {
+    status = await (await fetch('/api/status')).json();
+  } catch (err) {
+    return;
+  }
+
+  document.getElementById('source').textContent = status.source;
+  for (const ch of status.channels) {
+    const card = cardFor(ch.name);
+    if (!card) continue;
+
+    card.querySelector('[data-role=squelch]').classList.toggle('open', ch.squelch_open);
+    // Map a useful slice of the dynamic range onto the meter: -90 dBFS is the
+    // noise floor of a quiet channel, -30 is a strong local signal.
+    const pct = Math.max(0, Math.min(100, ((ch.level_db + 90) / 60) * 100));
+    card.querySelector('[data-role=level]').style.width = pct + '%';
+    card.querySelector('[data-role=level-text]').textContent = ch.level_db.toFixed(1) + ' dBFS';
+    card.querySelector('[data-role=listeners]').textContent =
+      ch.listeners === 1 ? '1 listener' : `${ch.listeners} listeners`;
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

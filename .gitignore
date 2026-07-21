@@ -1,0 +1,15 @@
+# Build output
+/bin/
+
+# IQ captures and demodulated audio. A minute of IQ at 960 kS/s is ~440 MB,
+# well past what belongs in git (and past GitHub's file size limit).
+/testdata/*.cf32
+/testdata/*.wav
+*.cf32
+*.wav
+
+# Local editor and tool state
+.DS_Store
+
+# Per-machine tool permissions, not project configuration
+.claude/settings.local.json

@@ -1,0 +1,66 @@
+# airport-sdr configuration
+#
+# Validated on load. Unknown keys are an error rather than being silently
+# ignored, so a typo fails loudly instead of quietly doing the wrong thing.
+
+sdr:
+  # SoapySDR device argument string. Empty selects the first device found, but
+  # naming the driver also stops SoapySDR probing every installed module, which
+  # is where the wall of ALSA and SSDP errors at startup comes from.
+  # Examples: driver=rtlsdr | driver=lime | driver=airspy
+  driver: "driver=lime"
+
+  # 960 kS/s is a native RTL-SDR rate and is gentle on a Pi's shared USB bus,
+  # while still covering a 300 kHz span of airband.
+  sample_rate: 960000
+
+  # Centre the tuner between the channels of interest and, critically, NOT on
+  # any of them: most front ends show a DC spur at the local oscillator, and a
+  # channel parked there is a silent quality failure. 118.25 MHz puts tower
+  # (118.1) and ground (118.4) at -150 and +150 kHz.
+  center_freq: 118250000
+
+  gain: 61
+  auto_gain: false
+
+  # Antenna port name, driver-specific. Empty lets the driver choose, which is
+  # a trap on a device with several ports: the default is often the high-band
+  # input, which is deaf at VHF and gives a capture at the noise floor.
+  # LimeSDR Mini airband: LNAW (the wideband port). Run `airport-sdr probe` to
+  # list what this device actually offers.
+  antenna: "LNAW"
+
+  # Crystal error correction in parts per million.
+  ppm: 0
+
+audio:
+  # 8 kHz is ample for AM airband voice, which is bandlimited to ~3.4 kHz.
+  # The sample rate above must be an exact multiple of this.
+  rate: 8000
+
+server:
+  # Loopback by default. Exposing the receiver beyond this host must always be
+  # a deliberate act. The recommended way to reach it remotely is to put
+  # Tailscale Serve in front rather than binding to 0.0.0.0.
+  listen: "127.0.0.1:8080"
+
+channels:
+  - name: Tower
+    freq: 118100000
+    mode: am
+    # Carrier level below which the channel is muted. Airband is silent most of
+    # the time; without squelch the AGC would chase the noise floor to full gain.
+    #
+    # This is not a guess: on a measured capture here the channel noise floor
+    # sat at about -67 dBFS (the squelch jams permanently open at -68) and
+    # traffic peaked around -59, so -62 sits in the middle of a narrow window.
+    # Set it per site. Run `airport-sdr replay` on a capture: it prints the peak
+    # channel level, and the threshold wants to be a few dB below that.
+    squelch_db: -62
+
+  # Both channels fit inside one capture at the sample rate above. Uncomment to
+  # add ground without changing anything else.
+  # - name: Ground
+  #   freq: 118400000
+  #   mode: am
+  #   squelch_db: -35
