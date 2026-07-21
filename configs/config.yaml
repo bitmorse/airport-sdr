@@ -49,13 +49,13 @@ embed:
   #
   # Each entry is a bare origin — scheme, host and optional port, nothing else.
   # A whole page URL will never match the Origin a browser sends and is refused.
-  #   allowed_origins:
-  #     - "https://yoursite.example"
-  #     - "http://localhost:9999"
+  allowed_origins:
+  - "https://bitmorse.com"
+  - "http://bitmorse.github.io"
   #
   # The single entry "*" permits any site on the internet. That suits a
   # deliberately public receiver and nothing else.
-  allowed_origins: []
+#  allowed_origins: []
 
   # Default iframe size advertised by the oEmbed endpoint. The embedded player
   # is compact by design; an embedder can override the iframe size anyway.
