@@ -49,13 +49,17 @@ embed:
   #
   # Each entry is a bare origin — scheme, host and optional port, nothing else.
   # A whole page URL will never match the Origin a browser sends and is refused.
-  allowed_origins:
-  - "https://bitmorse.com"
-  - "http://bitmorse.github.io"
   #
-  # The single entry "*" permits any site on the internet. That suits a
-  # deliberately public receiver and nothing else.
-#  allowed_origins: []
+  # The scheme has to be the one the browser actually uses. A site that
+  # redirects to https, or is https-only as GitHub Pages is, always sends an
+  # https Origin; an http entry for it silently never matches.
+  #
+  # Leave this empty to disable embedding. The single entry "*" permits any
+  # site on the internet, which suits a deliberately public receiver and
+  # nothing else.
+  allowed_origins:
+    - "https://bitmorse.com"
+    - "https://bitmorse.github.io"
 
   # Default iframe size advertised by the oEmbed endpoint. The embedded player
   # is compact by design; an embedder can override the iframe size anyway.
