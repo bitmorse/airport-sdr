@@ -14,11 +14,11 @@ is one edit rather than several rounds.
 
 ### `sdr`
 
+Device-level settings, shared by every group.
+
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `driver` | string | `""` | SoapySDR device args, e.g. `driver=lime`. Naming the driver also stops SoapySDR probing every installed module, which is the source of the ALSA/SSDP error wall at startup. |
-| `sample_rate` | Hz | `960000` | **Must be a whole multiple of `audio.rate`.** |
-| `center_freq` | Hz | `118250000` | Must not be on a channel — see below. |
 | `gain` | dB | `61` | Range −50…100 here; clamped to what the device reports. Negative is legal — some front ends express attenuation that way. |
 | `auto_gain` | bool | `false` | Hands gain to the driver; `gain` is then ignored. |
 | `antenna` | string | `"LNAW"` | **Set this explicitly.** See [hardware.md](hardware.md). |
@@ -36,14 +36,34 @@ is one edit rather than several rounds.
 |---|---|---|---|
 | `listen` | addr | `127.0.0.1:8080` | Loopback by default. Exposure must be deliberate. |
 
-### `channels[]`
+### `groups[]`
+
+One tuner position and the channels it covers. The radio serves one group at a
+time; every channel inside it is demodulated in parallel, and switching groups
+retunes the radio for **all** listeners.
+
+| Key | Type | Notes |
+|---|---|---|
+| `name` | string | Required, unique. Shown in the UI and used by the switch API. |
+| `center_freq` | Hz | Must not sit on any of its channels — see below. |
+| `sample_rate` | Hz | **Must be a whole multiple of `audio.rate`.** Per-group, so a wide group can coexist with narrow ones. |
+| `channels` | list | At least one. |
+
+### `groups[].channels[]`
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `name` | string | — | Required, unique. Used in URLs. |
-| `freq` | Hz | — | Required. Must be inside the captured span and clear of the LO. |
+| `name` | string | — | Required, and unique **across all groups**, since it keys the streaming endpoints. |
+| `freq` | Hz | — | Required. Must be inside its group's span and clear of that group's LO. |
 | `mode` | string | `am` | Only `am` today. |
 | `squelch_db` | dBFS | `-35` | **Measure this per site.** See below. |
+
+### The pre-groups form
+
+A config with a flat top-level `channels` list plus `sdr.center_freq` and
+`sdr.sample_rate` still works: it folds into a single group named `Default`.
+Using both forms at once is refused, because which tuning applies would be
+ambiguous.
 
 ## Rules the validator enforces
 
@@ -56,16 +76,18 @@ nothing downstream can recover it.
 Every channel must be at least **12.5 kHz** from `center_freq`. Offset-tune:
 
 ```yaml
-sdr:
-  center_freq: 118250000   # between the two channels, on neither
-channels:
-  - {name: Tower,  freq: 118100000, mode: am, squelch_db: -62}   # -150 kHz
-  - {name: Ground, freq: 118400000, mode: am, squelch_db: -62}   # +150 kHz
+groups:
+  - name: Tower
+    center_freq: 118250000   # between the two channels, on neither
+    sample_rate: 960000
+    channels:
+      - {name: Tower,  freq: 118100000, squelch_db: -62}   # -150 kHz
+      - {name: Ground, freq: 118400000, squelch_db: -62}   # +150 kHz
 ```
 
-### Channels must fit the captured span
+### Channels must fit their group's captured span
 
-A channel must be within ±40% of the sample rate from centre — the outer edges
+A channel must be within ±40% of its group's sample rate from that group's centre — the outer edges
 are where the anti-aliasing filter rolls off. At 960 kS/s that is ±384 kHz.
 
 ### Sample rate must divide evenly into audio rate
@@ -111,22 +133,39 @@ The floor is wherever the figure jumps toward 100%. Sit a few dB above it.
 
 ## Examples
 
-**LimeSDR Mini, two airband channels:**
+**LimeSDR Mini, an airfield across three tuner positions.** The eight channels
+span 7.85 MHz, far more than one capture can hold, so they are clustered:
 
 ```yaml
 sdr:
   driver: "driver=lime"
-  sample_rate: 960000
-  center_freq: 118250000
   gain: 61
   antenna: "LNAW"
 audio:
   rate: 8000
 server:
   listen: "127.0.0.1:8080"
-channels:
-  - {name: Tower,  freq: 118100000, mode: am, squelch_db: -62}
-  - {name: Ground, freq: 118400000, mode: am, squelch_db: -62}
+groups:
+  - name: Tower
+    center_freq: 118250000
+    sample_rate: 960000
+    channels:
+      - {name: Tower, freq: 118100000, squelch_db: -62}
+  - name: Ground
+    center_freq: 121805000
+    sample_rate: 960000
+    channels:
+      - {name: Apron S,  freq: 121755000, squelch_db: -62}
+      - {name: Apron N,  freq: 121855000, squelch_db: -62}
+      - {name: Ground,   freq: 121902000, squelch_db: -62}
+      - {name: Delivery, freq: 121925000, squelch_db: -62}
+  - name: Approach
+    center_freq: 125640000
+    sample_rate: 960000
+    channels:
+      - {name: Approach,  freq: 125325000, squelch_db: -62}
+      - {name: ATIS,      freq: 125725000, squelch_db: -62}
+      - {name: Departure, freq: 125950000, squelch_db: -62}
 ```
 
 **RTL-SDR:** use a rate from the device's fixed list, and check the antenna name
@@ -135,8 +174,16 @@ with `probe` (usually just `RX`).
 ```yaml
 sdr:
   driver: "driver=rtlsdr"
-  sample_rate: 1024000
-  center_freq: 118250000
   gain: 40
   antenna: "RX"
+groups:
+  - name: Tower
+    center_freq: 118250000
+    sample_rate: 1024000
+    channels:
+      - {name: Tower, freq: 118100000, squelch_db: -62}
 ```
+
+An RTL-SDR tops out near 2.4 MS/s, so it cannot cover a whole airfield in one
+capture. Grouping is the only route there — and it retunes faster than a
+LimeSDR, which recalibrates on every tune.

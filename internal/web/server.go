@@ -36,17 +36,36 @@ type ChannelState struct {
 // and a function to ask for state, nothing more. That keeps this package
 // testable without building a receive chain.
 type ChannelInfo struct {
-	Name      string
+	Name string
+	// Group is the tuner position that covers this channel. Only channels in
+	// the active group carry audio; the rest stay listed but silent.
+	Group     string
 	Freq      float64
 	AudioRate int
 	Hub       *stream.Hub
 	State     func() ChannelState
 }
 
+// GroupInfo describes one tuner position.
+type GroupInfo struct {
+	Name       string
+	CenterFreq float64
+	SampleRate float64
+	Channels   []string
+	Active     bool
+}
+
 // Options configures the server.
 type Options struct {
 	Channels          []ChannelInfo
 	SourceDescription string
+
+	// Groups reports the configured tuner positions and which is live. It is
+	// called per request because the active group changes at runtime.
+	Groups func() []GroupInfo
+	// Switch moves the radio to another group. A nil Switch means the receiver
+	// cannot retune, which is the case when replaying a capture.
+	Switch func(ctx context.Context, group string) error
 }
 
 // Server routes audio and status over HTTP.
@@ -75,6 +94,8 @@ func NewServer(opts Options) (*Server, error) {
 	s.mux.Handle("GET /static/", http.FileServerFS(staticFiles))
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.HandleFunc("GET /api/channels", s.handleChannels)
+	s.mux.HandleFunc("GET /api/groups", s.handleGroups)
+	s.mux.HandleFunc("POST /api/groups/{name}/activate", s.handleActivate)
 	s.mux.HandleFunc("GET /api/status", s.handleStatus)
 	s.mux.HandleFunc("GET /ws/audio/{name}", s.handleWebSocket)
 	s.mux.HandleFunc("GET /stream/{name}", s.handleWAV)
@@ -97,15 +118,93 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleChannels(w http.ResponseWriter, r *http.Request) {
 	type channelJSON struct {
 		Name      string  `json:"name"`
+		Group     string  `json:"group"`
 		Freq      float64 `json:"freq"`
 		AudioRate int     `json:"audio_rate"`
+		Active    bool    `json:"active"`
 	}
 
+	active := s.activeGroup()
 	out := make([]channelJSON, 0, len(s.opts.Channels))
 	for _, ch := range s.opts.Channels {
-		out = append(out, channelJSON{Name: ch.Name, Freq: ch.Freq, AudioRate: ch.AudioRate})
+		out = append(out, channelJSON{
+			Name: ch.Name, Group: ch.Group, Freq: ch.Freq, AudioRate: ch.AudioRate,
+			// With no groups configured every channel is always live.
+			Active: active == "" || ch.Group == active,
+		})
 	}
 	writeJSON(w, out)
+}
+
+// activeGroup names the live group, or "" when the receiver has no groups.
+func (s *Server) activeGroup() string {
+	if s.opts.Groups == nil {
+		return ""
+	}
+	for _, g := range s.opts.Groups() {
+		if g.Active {
+			return g.Name
+		}
+	}
+	return ""
+}
+
+func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
+	type groupJSON struct {
+		Name       string   `json:"name"`
+		CenterFreq float64  `json:"center_freq"`
+		SampleRate float64  `json:"sample_rate"`
+		Channels   []string `json:"channels"`
+		Active     bool     `json:"active"`
+	}
+
+	out := []groupJSON{}
+	if s.opts.Groups != nil {
+		for _, g := range s.opts.Groups() {
+			out = append(out, groupJSON{
+				Name: g.Name, CenterFreq: g.CenterFreq, SampleRate: g.SampleRate,
+				Channels: g.Channels, Active: g.Active,
+			})
+		}
+	}
+	writeJSON(w, out)
+}
+
+// handleActivate retunes the radio to another group.
+//
+// One tuner serves everyone, so this changes what every listener hears. That is
+// inherent to a single-radio receiver rather than something the API can hide.
+func (s *Server) handleActivate(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	if s.opts.Switch == nil || s.opts.Groups == nil {
+		http.Error(w, "this receiver cannot switch groups", http.StatusNotImplemented)
+		return
+	}
+	if !s.hasGroup(name) {
+		http.Error(w, "no such group", http.StatusNotFound)
+		return
+	}
+
+	if err := s.opts.Switch(r.Context(), name); err != nil {
+		slog.Warn("group switch refused", "group", name, "err", err)
+		// The radio declined: the receiver is still running on its previous
+		// group, so this is a conflict rather than a server fault.
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+
+	slog.Info("group switched by request", "group", name, "remote", r.RemoteAddr)
+	s.handleStatus(w, r)
+}
+
+func (s *Server) hasGroup(name string) bool {
+	for _, g := range s.opts.Groups() {
+		if g.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -132,13 +231,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, struct {
-		Source   string        `json:"source"`
-		UptimeS  float64       `json:"uptime_s"`
-		Channels []channelJSON `json:"channels"`
+		Source      string        `json:"source"`
+		ActiveGroup string        `json:"active_group"`
+		UptimeS     float64       `json:"uptime_s"`
+		Channels    []channelJSON `json:"channels"`
 	}{
-		Source:   s.opts.SourceDescription,
-		UptimeS:  time.Since(s.started).Seconds(),
-		Channels: channels,
+		Source:      s.opts.SourceDescription,
+		ActiveGroup: s.activeGroup(),
+		UptimeS:     time.Since(s.started).Seconds(),
+		Channels:    channels,
 	})
 }
 

@@ -76,6 +76,7 @@ cmd/airport-sdr/     CLI: serve, probe, record, replay, spectrum, validate
 internal/config/     YAML config + validation (the gate before hardware)
 internal/sdr/        Source interface, file replay, cgo SoapySDR, tune policy
 internal/dsp/        NCO, FIR, AM demod, AGC, squelch, decimation planner, FFT
+internal/receiver/   the receive loop, group switching, DSP chain lifecycle
 internal/stream/     mu-law, WAV, and the listener fan-out hub
 internal/web/        HTTP + WebSocket, embedded browser client
 ```
@@ -92,6 +93,9 @@ before adding a third — "as light as possible" is an explicit project goal.
   listener rather than stalling the receive chain. Tests assert this.
 - **Status is read through atomics**, not a mutex, so HTTP handlers never
   contend with the DSP goroutine.
+- **Switching groups is a sequential handoff**, never shared mutable state:
+  stop the stream, drain it, retune, restart. `Source.Retune` must never be
+  called while a stream is live, and a receiver test asserts it is not.
 - **The web package knows nothing about DSP types** — it takes a hub and a state
   function. That is what lets it be tested without building a receive chain.
 

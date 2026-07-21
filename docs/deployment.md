@@ -101,7 +101,9 @@ Prefer Tailscale.
 | `/ws/audio/{name}` | µ-law over WebSocket, ~150 ms latency |
 | `/stream/{name}.wav` | Open-ended WAV — VLC, `<audio>`, phone lock screens |
 | `/api/channels` | Configured channels |
-| `/api/status` | Level, squelch, listener count, dropped frames |
+| `/api/status` | Level, squelch, listener count, dropped frames, active group |
+| `/api/groups` | Configured tuner positions and which is live |
+| `POST /api/groups/{name}/activate` | Retune to another group |
 
 The WebSocket sends **nothing between transmissions** — the squelch already knows
 when the channel is idle, so average bandwidth measured 17.8 kbit/s against
@@ -123,6 +125,10 @@ curl -s localhost:8080/api/status | jq
 | `squelch_open` | Permanently true = `squelch_db` below the noise floor |
 | `dropped` | Rising = a listener's connection cannot keep up (not a receiver fault) |
 | `uptime_s` | Resets indicate the service is restarting |
+| `active_group` | Which tuner position is live |
+
+Note that switching groups retunes the one radio, so it changes what **every**
+listener hears. That is inherent to a single-tuner receiver.
 
 Overflow warnings in the log (`device dropped samples`) mean the host is not
 keeping up with USB — lower the sample rate.

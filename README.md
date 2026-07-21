@@ -12,8 +12,10 @@ SDR ──▶ frequency shift ──▶ decimate ──▶ AM demod ──▶ sq
 
 - **Receives AM airband voice** and serves it over WebSocket (~150 ms latency)
   or as a plain WAV stream that VLC, `<audio>` and phone lock screens can play.
-- **Several channels from one capture.** Tower and Ground sit inside the same
-  slice of spectrum, so a second channel costs config, not code or CPU.
+- **Several channels at once, grouped by tuning.** Every channel inside the
+  active group is demodulated in parallel; groups are switched from the browser.
+  A whole airfield's frequencies span more spectrum than one capture can hold,
+  so they are grouped by the tuner position that covers them.
 - **Sends nothing between transmissions.** Airband is silent most of the time
   and the squelch already knows it, so the socket goes quiet — measured at
   17.8 kbit/s average against 64 kbit/s continuous, with no codec involved.
@@ -84,16 +86,27 @@ One YAML file, validated on load, unknown keys rejected. See
 ```yaml
 sdr:
   driver: "driver=lime"
-  sample_rate: 960000
-  center_freq: 118250000    # NOT on a channel — see below
   gain: 61
   antenna: "LNAW"
-channels:
+
+# One tuner covers one group at a time; every channel inside it is demodulated
+# in parallel, and switching groups retunes the radio.
+groups:
   - name: Tower
-    freq: 118100000
-    mode: am
-    squelch_db: -62         # measure this per site
+    center_freq: 118250000    # NOT on a channel — see below
+    sample_rate: 960000
+    channels:
+      - {name: Tower, freq: 118100000, squelch_db: -62}   # measure per site
+  - name: Ground
+    center_freq: 121805000
+    sample_rate: 960000
+    channels:
+      - {name: Ground,   freq: 121902000, squelch_db: -62}
+      - {name: Delivery, freq: 121925000, squelch_db: -62}
 ```
+
+Configs written before groups existed still work: a flat `channels` list folds
+into one implicit group.
 
 Two rules the validator enforces, because both fail silently otherwise:
 
@@ -107,7 +120,7 @@ Two rules the validator enforces, because both fail silently otherwise:
 
 | Command | Purpose |
 |---|---|
-| `serve` | Run the receiver and web server (default). `--iq FILE` replays a capture. |
+| `serve` | Run the receiver and web server (default). `--iq FILE` replays a capture, `--group` picks the starting group. |
 | `probe` | List the radio's antennas, gain range and supported rates. |
 | `record` | Capture raw IQ to `.cf32`. |
 | `replay` | Demodulate a capture to WAV and report why a channel was silent. |

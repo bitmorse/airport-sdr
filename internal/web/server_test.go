@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +39,170 @@ func get(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
 	return rec
+}
+
+func post(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+	return rec
+}
+
+// groupedServer has two groups with one channel each, and a switch that
+// records what it was asked to do.
+func groupedServer(t *testing.T, switchErr error) (*Server, *string) {
+	t.Helper()
+	active := "Alpha"
+	hubA, hubB := stream.NewHub(8, 160), stream.NewHub(8, 160)
+
+	srv, err := NewServer(Options{
+		SourceDescription: "test source",
+		Channels: []ChannelInfo{
+			{Name: "Tower", Group: "Alpha", Freq: 118_100_000, AudioRate: 8000, Hub: hubA},
+			{Name: "Ground", Group: "Bravo", Freq: 121_902_000, AudioRate: 8000, Hub: hubB},
+		},
+		Groups: func() []GroupInfo {
+			return []GroupInfo{
+				{Name: "Alpha", CenterFreq: 118_250_000, SampleRate: 960_000,
+					Channels: []string{"Tower"}, Active: active == "Alpha"},
+				{Name: "Bravo", CenterFreq: 121_805_000, SampleRate: 960_000,
+					Channels: []string{"Ground"}, Active: active == "Bravo"},
+			}
+		},
+		Switch: func(_ context.Context, name string) error {
+			if switchErr != nil {
+				return switchErr
+			}
+			active = name
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return srv, &active
+}
+
+// --- groups -----------------------------------------------------------------
+
+func TestGroupsAPIListsGroupsAndMarksTheActiveOne(t *testing.T) {
+	srv, _ := groupedServer(t, nil)
+	rec := get(t, srv, "/api/groups")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/groups = %d, want 200", rec.Code)
+	}
+
+	var got []struct {
+		Name     string   `json:"name"`
+		Channels []string `json:"channels"`
+		Active   bool     `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, rec.Body.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d groups, want 2", len(got))
+	}
+	if !got[0].Active || got[1].Active {
+		t.Errorf("wrong group marked active: %+v", got)
+	}
+}
+
+func TestActivatingAGroupSwitchesIt(t *testing.T) {
+	srv, active := groupedServer(t, nil)
+
+	rec := post(t, srv, "/api/groups/Bravo/activate")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("activate = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	if *active != "Bravo" {
+		t.Errorf("active group = %q, want Bravo", *active)
+	}
+}
+
+func TestActivatingAnUnknownGroupIs404(t *testing.T) {
+	srv, _ := groupedServer(t, nil)
+	if rec := post(t, srv, "/api/groups/Nowhere/activate"); rec.Code != http.StatusNotFound {
+		t.Errorf("activating an unknown group = %d, want 404", rec.Code)
+	}
+}
+
+// Replaying a capture cannot retune, and a listener should be told why rather
+// than seeing a generic failure.
+func TestActivateReportsAFailedSwitch(t *testing.T) {
+	srv, _ := groupedServer(t, errors.New("capture holds only one group"))
+
+	rec := post(t, srv, "/api/groups/Bravo/activate")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("failed switch = %d, want 409", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "capture holds only one group") {
+		t.Errorf("response should carry the reason, got: %s", rec.Body.String())
+	}
+}
+
+func TestActivateRequiresPost(t *testing.T) {
+	srv, _ := groupedServer(t, nil)
+	if rec := get(t, srv, "/api/groups/Bravo/activate"); rec.Code == http.StatusOK {
+		t.Error("activating a group with GET should not succeed")
+	}
+}
+
+// A receiver without switching wired up must say so plainly.
+func TestActivateWhenSwitchingIsUnavailable(t *testing.T) {
+	srv, _ := testServer(t)
+	if rec := post(t, srv, "/api/groups/Alpha/activate"); rec.Code == http.StatusOK {
+		t.Errorf("activate = %d, want a failure when switching is unsupported", rec.Code)
+	}
+}
+
+// --- channels report their group --------------------------------------------
+
+func TestChannelsAPIReportsGroupAndWhetherItIsLive(t *testing.T) {
+	srv, _ := groupedServer(t, nil)
+	rec := get(t, srv, "/api/channels")
+
+	var got []struct {
+		Name   string `json:"name"`
+		Group  string `json:"group"`
+		Active bool   `json:"active"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (body %s)", err, rec.Body.String())
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d channels, want 2", len(got))
+	}
+
+	byName := map[string]bool{}
+	for _, c := range got {
+		if c.Group == "" {
+			t.Errorf("channel %q does not report its group", c.Name)
+		}
+		byName[c.Name] = c.Active
+	}
+	if !byName["Tower"] {
+		t.Error("Tower is in the active group but is not reported as live")
+	}
+	if byName["Ground"] {
+		t.Error("Ground is in an idle group but is reported as live")
+	}
+}
+
+func TestStatusReportsTheActiveGroup(t *testing.T) {
+	srv, _ := groupedServer(t, nil)
+	rec := get(t, srv, "/api/status")
+
+	var got struct {
+		ActiveGroup string `json:"active_group"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.ActiveGroup != "Alpha" {
+		t.Errorf("active_group = %q, want Alpha", got.ActiveGroup)
+	}
 }
 
 func TestServerRequiresAtLeastOneChannel(t *testing.T) {

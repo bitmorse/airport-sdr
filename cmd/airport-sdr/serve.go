@@ -46,6 +46,8 @@ func serveCmd(cfgPath, listen string, args []string) error {
 	srv, err := web.NewServer(web.Options{
 		Channels:          channelInfos(rcv),
 		SourceDescription: rcv.SourceDescription(),
+		Groups:            func() []web.GroupInfo { return groupInfos(rcv) },
+		Switch:            rcv.Switch,
 	})
 	if err != nil {
 		return err
@@ -93,6 +95,7 @@ func channelInfos(rcv *receiver.Receiver) []web.ChannelInfo {
 		state := c.State
 		infos = append(infos, web.ChannelInfo{
 			Name:      c.Name,
+			Group:     c.Group,
 			Freq:      c.Freq,
 			AudioRate: c.AudioRate,
 			Hub:       c.Hub,
@@ -103,4 +106,21 @@ func channelInfos(rcv *receiver.Receiver) []web.ChannelInfo {
 		})
 	}
 	return infos
+}
+
+// groupInfos adapts the receiver's group list for the web server.
+func groupInfos(rcv *receiver.Receiver) []web.GroupInfo {
+	groups := rcv.Groups()
+
+	out := make([]web.GroupInfo, 0, len(groups))
+	for _, g := range groups {
+		out = append(out, web.GroupInfo{
+			Name:       g.Name,
+			CenterFreq: g.CenterFreq,
+			SampleRate: g.SampleRate,
+			Channels:   g.Channels,
+			Active:     g.Active,
+		})
+	}
+	return out
 }

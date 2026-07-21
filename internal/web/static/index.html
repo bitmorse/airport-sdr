@@ -48,6 +48,24 @@
     margin-top: .6rem; color: var(--dim); font-size: .8rem;
     font-variant-numeric: tabular-nums; display: flex; gap: 1.25rem; flex-wrap: wrap;
   }
+  .groups {
+    display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1rem;
+  }
+  .groups button {
+    background: var(--panel); color: var(--dim); border: 1px solid var(--line);
+    font-weight: 500; padding: .4rem .85rem;
+  }
+  .groups button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .groups button:disabled { opacity: .6; cursor: wait; }
+  .card.idle { opacity: .55; }
+  .card.idle .meter, .card.idle .stats { visibility: hidden; }
+  .switchto {
+    background: none; color: var(--accent); border: 1px solid var(--line);
+    font-size: .85rem; padding: .3rem .7rem;
+  }
+  .err {
+    color: #d1495b; font-size: .85rem; margin-bottom: .75rem; min-height: 1.2em;
+  }
   .note {
     color: var(--dim); font-size: .82rem; margin-top: 1.25rem;
     border-top: 1px solid var(--line); padding-top: 1rem;
@@ -61,6 +79,8 @@
 <main>
   <h1>airport-sdr</h1>
   <div class="sub" id="source">connecting…</div>
+  <div class="groups" id="groups"></div>
+  <div class="err" id="error"></div>
   <div id="channels"></div>
   <div class="note" id="note"></div>
 </main>
@@ -87,7 +107,7 @@ const ULAW = (() => {
 // can play with no JavaScript involved.
 const canUseWorklet = window.isSecureContext && !!(window.AudioContext || window.webkitAudioContext);
 
-const state = { active: null, ctx: null, node: null, socket: null, audio: null };
+const state = { active: null, ctx: null, node: null, socket: null, audio: null, group: null };
 
 async function boot() {
   const note = document.getElementById('note');
@@ -99,14 +119,17 @@ async function boot() {
     return;
   }
 
+  // Only the active group's channels carry audio. The rest stay listed, so the
+  // whole airfield is visible at once and switching is one click away.
   document.getElementById('channels').innerHTML = channels.map((c) => `
-    <div class="card" data-name="${c.name}">
+    <div class="card" data-name="${c.name}" data-group="${c.group || ''}">
       <div class="row">
         <span class="dot" data-role="squelch"></span>
         <span class="name">${c.name}</span>
         <span class="freq">${(c.freq / 1e6).toFixed(3)} MHz</span>
         <span class="spacer"></span>
         <button data-role="listen">Listen</button>
+        <button class="switchto" data-role="switch" hidden></button>
       </div>
       <div class="meter"><i data-role="level"></i></div>
       <div class="stats">
@@ -119,7 +142,11 @@ async function boot() {
   for (const card of document.querySelectorAll('.card')) {
     card.querySelector('[data-role=listen]')
         .addEventListener('click', () => toggle(card.dataset.name));
+    card.querySelector('[data-role=switch]')
+        .addEventListener('click', () => activate(card.dataset.group));
   }
+
+  await refreshGroups();
 
   note.innerHTML = canUseWorklet
     ? 'Low-latency stream: mu-law over WebSocket, 64 kbit/s while a transmission ' +
@@ -133,6 +160,70 @@ async function boot() {
 
   poll();
   setInterval(poll, 1000);
+}
+
+// The radio covers one group at a time, so switching retunes it for everyone
+// listening. That is inherent to having a single tuner.
+async function refreshGroups() {
+  let groups;
+  try {
+    groups = await (await fetch('/api/groups')).json();
+  } catch (err) {
+    return;
+  }
+
+  const bar = document.getElementById('groups');
+  if (!groups.length) { bar.hidden = true; return; }
+
+  state.group = (groups.find((g) => g.active) || {}).name || null;
+  bar.innerHTML = groups.map((g) => `
+    <button data-group="${g.name}" class="${g.active ? 'on' : ''}">
+      ${g.name} <span style="opacity:.7">${(g.center_freq / 1e6).toFixed(3)}</span>
+    </button>`).join('');
+
+  for (const b of bar.querySelectorAll('button')) {
+    b.addEventListener('click', () => activate(b.dataset.group));
+  }
+  applyGroupToCards();
+}
+
+function applyGroupToCards() {
+  for (const card of document.querySelectorAll('.card')) {
+    const group = card.dataset.group;
+    const live = !state.group || group === state.group;
+
+    card.classList.toggle('idle', !live);
+    card.querySelector('[data-role=listen]').hidden = !live;
+
+    const sw = card.querySelector('[data-role=switch]');
+    sw.hidden = live;
+    sw.textContent = `Switch to ${group}`;
+  }
+}
+
+async function activate(group) {
+  if (!group || group === state.group) return;
+
+  const error = document.getElementById('error');
+  error.textContent = '';
+  for (const b of document.querySelectorAll('.groups button')) b.disabled = true;
+
+  try {
+    const resp = await fetch(`/api/groups/${encodeURIComponent(group)}/activate`,
+                            { method: 'POST' });
+    if (!resp.ok) {
+      // A refused switch leaves the previous group running, so say why rather
+      // than leaving the page looking broken.
+      error.textContent = (await resp.text()).trim() || `could not switch to ${group}`;
+    } else {
+      stop(); // the channel being listened to may no longer be live
+    }
+  } catch (err) {
+    error.textContent = 'could not reach the receiver';
+  }
+
+  for (const b of document.querySelectorAll('.groups button')) b.disabled = false;
+  await refreshGroups();
 }
 
 function toggle(name) {
@@ -217,6 +308,9 @@ async function poll() {
   }
 
   document.getElementById('source').textContent = status.source;
+  if (status.active_group && status.active_group !== state.group) {
+    await refreshGroups();
+  }
   for (const ch of status.channels) {
     const card = cardFor(ch.name);
     if (!card) continue;
