@@ -57,8 +57,8 @@ const (
 
 	// Default size of the embeddable player. It is a single button, so it is
 	// small; an embedder can override the iframe dimensions anyway.
-	DefaultEmbedWidth  = 280
-	DefaultEmbedHeight = 64
+	DefaultEmbedWidth  = 230
+	DefaultEmbedHeight = 48
 
 	// EmbedAnyOrigin permits any site to frame the player.
 	EmbedAnyOrigin = "*"

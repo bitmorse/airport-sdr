@@ -2,7 +2,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/bitmorse/airport-sdr/internal/config"
 	"github.com/bitmorse/airport-sdr/internal/receiver"
@@ -19,6 +21,8 @@ func serveCmd(cfgPath, listen string, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	iq := fs.String("iq", "", "replay this .cf32 capture instead of using the radio")
 	group := fs.String("group", "", "which channel group to start on (default the first)")
+	embedOrigins := fs.String("embed-origin", "",
+		"comma-separated origins allowed to embed the player, overriding the config")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -26,6 +30,14 @@ func serveCmd(cfgPath, listen string, args []string) error {
 	cfg, err := loadConfig(cfgPath, listen)
 	if err != nil {
 		return err
+	}
+	if *embedOrigins != "" {
+		// Same idea as --listen: a deliberate, visible override of a setting
+		// whose default is deliberately closed.
+		cfg.Embed.AllowedOrigins = strings.Split(*embedOrigins, ",")
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid --embed-origin: %w", err)
+		}
 	}
 	start, err := activeGroup(cfg, *group)
 	if err != nil {

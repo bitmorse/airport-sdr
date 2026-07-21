@@ -21,8 +21,10 @@
   const origin = body.dataset.origin || '';
 
   const button = document.getElementById('toggle');
+  const icon = document.getElementById('icon');
   const squelch = document.getElementById('squelch');
   const message = document.getElementById('msg');
+  const listeners = document.getElementById('listeners');
 
   document.getElementById('freq').textContent =
     (Number(body.dataset.frequency) / 1e6).toFixed(3) + ' MHz';
@@ -39,7 +41,7 @@
   }
 
   function fail(code, text) {
-    message.textContent = text;
+    message.textContent = ' \u00b7 ' + text;
     emit('error', { code, message: text });
   }
 
@@ -54,10 +56,18 @@
   let muted = body.dataset.muted === '1';
   player.setMuted(muted);
 
+  // A triangle when idle, a square when playing. Icons rather than words keep
+  // the widget narrow enough to sit inside someone else's layout.
+  const PLAY = 'M2 1l7 4-7 4z';
+  const STOP = 'M2 2h6v6H2z';
+
   function render() {
     const playing = player.state().playing;
-    button.textContent = playing ? (muted ? 'Muted' : 'Stop') : 'Listen';
-    button.classList.toggle('on', playing && !muted);
+    icon.firstElementChild.setAttribute('d', playing ? STOP : PLAY);
+    button.classList.toggle('on', playing);
+    button.setAttribute('aria-label',
+      playing ? 'Stop' : 'Listen' + (muted ? ' (muted)' : ''));
+    button.title = playing ? (muted ? 'Playing, muted' : 'Stop') : 'Listen';
   }
 
   async function play() {
@@ -96,6 +106,7 @@
   // Squelch and level come from the same status endpoint the main page uses.
   // It is same-origin inside the frame, so no CORS is involved.
   let lastOpen = null;
+  let lastListeners = null;
 
   async function poll() {
     let status;
@@ -115,12 +126,21 @@
     }
     emit('level', { db: state.level_db });
 
+    // How many people are on this channel, this one included. Emitted only on
+    // change: it moves rarely, unlike the level.
+    const count = state.listeners || 0;
+    listeners.textContent = count;
+    if (count !== lastListeners) {
+      lastListeners = count;
+      emit('listeners', { count });
+    }
+
     // A channel in an idle group is never going to carry audio until the
     // receiver's operator switches to it. Say so rather than looking broken.
     if (status.active_group && body.dataset.group &&
         status.active_group !== body.dataset.group) {
-      message.textContent = 'receiver is on ' + status.active_group;
-    } else if (message.textContent.startsWith('receiver is on')) {
+      message.textContent = ' \u00b7 on ' + status.active_group;
+    } else if (message.textContent) {
       message.textContent = '';
     }
   }
@@ -135,14 +155,12 @@
     fail('origin-not-allowed', 'this site is not permitted to embed the player');
   }
 
+  // Nothing plays until someone asks: either a click on the button, or a play
+  // command from the host page. The player never starts on its own.
   emit('ready', {
     channel,
     group: body.dataset.group,
     frequency: Number(body.dataset.frequency),
     audioRate: Number(body.dataset.audioRate),
   });
-
-  // Browsers only permit unattended playback while muted, so autoplay is
-  // honoured but the host still needs a user gesture before unmuting.
-  if (body.dataset.autoplay === '1') play();
 })();

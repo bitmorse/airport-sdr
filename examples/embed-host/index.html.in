@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>airport-sdr embed demo</title>
+<!--
+  A demonstration of embedding a channel from another site, as described in
+  docs/embed.md. `make run-embed` fills in the two origins and serves this.
+
+  The receiver and this page are published on different Tailscale ports, which
+  makes them genuinely different origins while both remain https. That matters
+  twice over: it exercises the real cross-origin boundary, and https means the
+  frame gets a secure context and therefore the low-latency audio path.
+-->
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem auto; max-width: 46rem; padding: 0 1rem; }
+  button { font: inherit; padding: .4rem .9rem; margin: 0 .4rem .4rem 0; }
+  pre { background: #f4f4f4; padding: .75rem; height: 12rem; overflow: auto; font-size: 12px; }
+  code { background: #eee; padding: .1rem .3rem; border-radius: 3px; }
+  .row { margin: 1rem 0; }
+  b { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <h1>Embedding airport-sdr from another origin</h1>
+  <p>
+    This page is <code>@HOST@</code>.<br>
+    The frame below is <code>@RECEIVER@</code> — a different port, so a
+    different origin. The receiver's websocket origin check and its JSON API are
+    untouched: inside the frame they are same-origin.
+  </p>
+
+  <iframe id="atc"
+    src="@RECEIVER@/embed/Tower?origin=@HOST@"
+    width="230" height="48" allow="autoplay" style="border:1px solid #ccc"></iframe>
+
+  <div class="row">
+    <button id="play">play</button>
+    <button id="pause">pause</button>
+    <button id="mute">mute</button>
+    <button id="unmute">unmute</button>
+    <button id="vol">volume 0.3</button>
+    <button id="full">volume 1.0</button>
+  </div>
+
+  <p>squelch: <b id="sq">?</b> &nbsp;&nbsp; level: <b id="lvl">?</b></p>
+  <pre id="log"></pre>
+
+<script>
+const RECEIVER = '@RECEIVER@';
+const frame = document.getElementById('atc');
+const log = document.getElementById('log');
+
+// Commands sent before the frame reports `ready` are lost, so queue them.
+let ready = false;
+const queue = [];
+const post = (m) => frame.contentWindow.postMessage(
+  Object.assign({ source: 'airport-sdr', protocol: 1 }, m), RECEIVER);
+const send = (m) => ready ? post(m) : queue.push(m);
+
+addEventListener('message', (event) => {
+  // Always check the origin: anything on the page can post to window.
+  if (event.origin !== RECEIVER) return;
+  const msg = event.data;
+  if (!msg || msg.source !== 'airport-sdr') return;
+
+  if (msg.type === 'ready') { ready = true; queue.splice(0).forEach(post); }
+  if (msg.type === 'squelch') sq.textContent = msg.open;
+  if (msg.type === 'level') lvl.textContent = msg.db.toFixed(1) + ' dBFS';
+  if (msg.type !== 'level') log.textContent += JSON.stringify(msg) + '\n';
+});
+
+// play() has to come from a real click: browsers require a user gesture before
+// audible playback, and `allow="autoplay"` on the iframe delegates this page's
+// permission into the frame.
+play.onclick   = () => send({ type: 'play' });
+pause.onclick  = () => send({ type: 'pause' });
+mute.onclick   = () => send({ type: 'mute' });
+unmute.onclick = () => send({ type: 'unmute' });
+vol.onclick    = () => send({ type: 'setVolume', value: 0.3 });
+full.onclick   = () => send({ type: 'setVolume', value: 1.0 });
+</script>
+</body>
+</html>

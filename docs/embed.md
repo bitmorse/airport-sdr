@@ -3,9 +3,10 @@
 airport-sdr can be embedded in another page as an iframe player, controlled by
 the host page's JavaScript over `postMessage`.
 
-The embedded player is deliberately minimal: a listen/stop button, a carrier
-indicator and the channel's name and frequency. Everything else your page draws
-itself, from the `squelch` and `level` events below.
+The embedded player is deliberately compact — around 230x48 — so it can sit
+inside someone else's layout without dominating it: a round play/stop button,
+the channel name over its frequency, a carrier indicator and a listener count.
+Everything else your page draws itself, from the events below.
 
 ## Simplest option, if you only need play/pause/mute
 
@@ -28,8 +29,8 @@ path and live channel state.
 
 ```html
 <iframe
-  src="https://receiver.example/embed/Tower?origin=https://yoursite.example&muted=1"
-  width="280" height="64"
+  src="https://receiver.example/embed/Tower?origin=https://yoursite.example"
+  width="230" height="48"
   allow="autoplay"
   style="border:0"
 ></iframe>
@@ -41,8 +42,10 @@ Three things matter:
   player validates it against the receiver's allowlist and uses it as the
   `targetOrigin` for every message it sends. Without it the player still plays,
   but sends no messages.
-- **`allow="autoplay"`** delegates your page's autoplay permission into the
-  frame. Without it, programmatic `play()` is refused.
+- **`allow="autoplay"`** is required, and its name is misleading: it does *not*
+  make anything play by itself. A click on your page is not user activation
+  *inside* a cross-origin frame, so without this attribute the browser refuses
+  your `play()` command. See [Starting playback](#starting-playback).
 - **The receiver operator must allow your origin.** See
   [Server configuration](#server-configuration). Until then the frame will not
   render at all, and `/embed` returns 404.
@@ -52,8 +55,7 @@ Three things matter:
 | Parameter | Values | Default | Meaning |
 |---|---|---|---|
 | `origin` | an origin | — | Your page's origin. Required for `postMessage`. |
-| `muted` | `1`, `0` | `0` | Start muted. Required in practice if you want autoplay. |
-| `autoplay` | `1`, `0` | `0` | Attempt playback on load. Browsers only permit this while muted. |
+| `muted` | `1`, `0` | `0` | Start muted, so your page can unmute later. |
 | `theme` | `dark`, `light`, `auto` | `auto` | Follows the viewer's system setting by default. |
 
 The path segment is the channel name, URL-encoded: `/embed/Apron%20S`.
@@ -96,6 +98,7 @@ post plenty of unrelated traffic to `window`.
 | `state` | `playing`, `muted`, `volume` | On any change, and in reply to `getState`. |
 | `squelch` | `open` | When the channel opens or closes, i.e. when a transmission starts or ends. |
 | `level` | `db` | Roughly once a second, the channel's signal level in dBFS. |
+| `listeners` | `count` | When the number of people listening to this channel changes, including you. |
 | `error` | `code`, `message` | See [Errors](#errors). |
 
 ```js
@@ -148,26 +151,34 @@ const atc = airportSDR(document.getElementById('atc'), 'https://receiver.example
 atc.mute();
 ```
 
-## Autoplay
+## Starting playback
 
-Browsers refuse to start audible playback without user interaction, and this
-applies whether you use the iframe or a bare `<audio>` element.
+**The player never starts on its own.** Audio begins only when someone asks for
+it: a click on the player's own button, or a `play` command from your page.
+There is no autoplay parameter.
 
-What works reliably:
+For your `play()` to work, two things must hold:
 
-1. Load with `muted=1&autoplay=1`. Muted playback is permitted.
-2. Call `unmute()` from a real click handler on your page.
+1. **`allow="autoplay"` on the iframe.** Despite the name, this is what lets a
+   *cross-origin* frame play at all on your behalf — a click on your page does
+   not count as user activation inside the frame. Without it, `play` is refused.
+2. **A user gesture on your page first.** Browsers still require that a person
+   has interacted with your page before audible playback starts.
 
-`allow="autoplay"` on the iframe is still required — it delegates your page's
-permission into the frame. Without it even muted autoplay is refused.
+So the reliable pattern is to call `play()` from a real click handler:
 
-If playback is blocked you receive `error` with code `autoplay-blocked`.
+```js
+document.getElementById('listen').addEventListener('click', () => atc.play());
+```
+
+If playback is refused you receive `error` with code `autoplay-blocked`. Retry
+from a genuine click.
 
 ## Errors
 
 | `code` | Meaning |
 |---|---|
-| `autoplay-blocked` | The browser refused playback. Retry from a user gesture. |
+| `autoplay-blocked` | The browser refused playback, usually because no user gesture had happened yet, or `allow="autoplay"` is missing from the iframe. Retry from a real click. |
 | `origin-not-allowed` | The `origin` parameter is not in the receiver's allowlist. No further messages are sent. |
 | `stream-failed` | The connection to the receiver dropped. The player retries on its own. |
 | `insecure-context` | The page was loaded over plain http, so the low-latency path is unavailable. The player falls back to the WAV stream automatically; audio still works but lags by a few seconds. |
@@ -188,9 +199,9 @@ GET https://receiver.example/oembed?url=https://receiver.example/embed/Tower&for
   "type": "rich",
   "provider_name": "airport-sdr",
   "title": "Tower — 118.100 MHz",
-  "html": "<iframe src=\"https://receiver.example/embed/Tower\" width=\"280\" height=\"64\" allow=\"autoplay\" style=\"border:0\"></iframe>",
-  "width": 280,
-  "height": 64
+  "html": "<iframe src=\"https://receiver.example/embed/Tower\" width=\"230\" height=\"48\" allow=\"autoplay\" style=\"border:0\"></iframe>",
+  "width": 230,
+  "height": 48
 }
 ```
 
@@ -207,10 +218,10 @@ embed:
   # Origins permitted to frame the player. Empty disables embedding entirely.
   allowed_origins:
     - "https://yoursite.example"
-  # Default iframe size advertised by the oEmbed endpoint. The player is a
-  # single button, so it is small; an embedder can override it anyway.
-  width: 280
-  height: 64
+  # Default iframe size advertised by the oEmbed endpoint. The player is
+  # compact; an embedder can override the iframe size anyway.
+  width: 230
+  height: 48
 ```
 
 This drives two things: the `Content-Security-Policy: frame-ancestors` header on

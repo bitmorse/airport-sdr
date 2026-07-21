@@ -75,11 +75,10 @@ type embedPage struct {
 	// Origin has already been checked against the allowlist. It is empty when
 	// the caller supplied none or supplied one that is not permitted, and the
 	// player then sends no messages at all.
-	Origin   string
-	Muted    string
-	Autoplay string
-	Theme    string
-	OEmbed   string
+	Origin string
+	Muted  string
+	Theme  string
+	OEmbed string
 }
 
 func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +104,6 @@ func (s *Server) handleEmbed(w http.ResponseWriter, r *http.Request) {
 		AudioRate: ch.AudioRate,
 		Origin:    origin,
 		Muted:     boolParam(r, "muted"),
-		Autoplay:  boolParam(r, "autoplay"),
 		Theme:     themeParam(r),
 		OEmbed:    s.oembedDiscoveryURL(r, ch.Name),
 	}

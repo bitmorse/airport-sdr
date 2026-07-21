@@ -128,12 +128,23 @@ func TestEmbedInjectsOnlyAnAllowedOrigin(t *testing.T) {
 
 func TestEmbedPassesThroughPlayerOptions(t *testing.T) {
 	srv := embedServer(t, "https://example.com")
-	body := getEmbed(t, srv, "/embed/Tower?muted=1&autoplay=1&theme=dark").Body.String()
+	body := getEmbed(t, srv, "/embed/Tower?muted=1&theme=dark").Body.String()
 
-	for _, want := range []string{`data-muted="1"`, `data-autoplay="1"`, `data-theme="dark"`} {
+	for _, want := range []string{`data-muted="1"`, `data-theme="dark"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page is missing %s", want)
 		}
+	}
+}
+
+// The player never starts on its own. Audio begins only when someone asks for
+// it: a click on the button, or a play command from the host page.
+func TestEmbedNeverAutoplays(t *testing.T) {
+	srv := embedServer(t, "https://example.com")
+	body := getEmbed(t, srv, "/embed/Tower?autoplay=1").Body.String()
+
+	if strings.Contains(body, "data-autoplay") {
+		t.Error("the page still carries an autoplay setting")
 	}
 }
 
@@ -145,6 +156,17 @@ func TestEmbedEscapesInjectedValues(t *testing.T) {
 
 	if strings.Contains(rec.Body.String(), "<script>alert(1)</script>") {
 		t.Error("a query parameter was injected into the page unescaped")
+	}
+}
+
+// The player shows how many people are on the channel, and emits the count so a
+// host page can show its own.
+func TestEmbedShowsListenerCount(t *testing.T) {
+	srv := embedServer(t, "https://example.com")
+	body := getEmbed(t, srv, "/embed/Tower").Body.String()
+
+	if !strings.Contains(body, `id="listeners"`) {
+		t.Error("the player has nowhere to show the listener count")
 	}
 }
 

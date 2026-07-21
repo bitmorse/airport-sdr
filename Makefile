@@ -17,6 +17,21 @@ DESTDIR    ?=
 CONFDIR    ?= /etc/$(BINARY)
 SYSTEMDDIR ?= /etc/systemd/system
 
+CONFIG ?= configs/config.yaml
+# IQ=<file.cf32> replays a capture instead of using the radio.
+IQ     ?=
+# `make run` publishes over Tailscale Serve and binds to loopback, because that
+# is where Serve proxies to. PORT is the local port behind the proxy; LISTEN
+# overrides the bind address entirely if you would rather not use Tailscale.
+PORT      ?= 8080
+# `make run-embed` publishes the demo host page on a second Tailscale HTTPS
+# port. A different port is a different origin, which is what makes the demo a
+# real cross-origin test rather than a simulated one.
+EMBED_PORT       ?= 9999
+EMBED_HTTPS_PORT ?= 8443
+LISTEN    ?= 127.0.0.1:$(PORT)
+TAILSCALE ?= tailscale
+
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X main.version=$(VERSION) -s -w
 GOFLAGS ?=
@@ -25,8 +40,8 @@ GOFLAGS ?=
 FULL_TAGS := soapy
 
 .DEFAULT_GOAL := build
-.PHONY: build build-full test watch test-alloc test-assert lint bench \
-        cross record install uninstall clean tools help
+.PHONY: build build-full run run-embed serve-off test watch test-alloc test-assert lint \
+        lint-js bench cross record replay install uninstall clean tools help
 
 ## build: pure-Go binary (no cgo, cross-compiles anywhere)
 build:
@@ -40,6 +55,51 @@ build-full:
 	CGO_ENABLED=1 go build $(GOFLAGS) -tags '$(FULL_TAGS)' \
 		-ldflags '$(LDFLAGS)' -o $(BIN_DIR)/$(BINARY) $(CMD)
 	@echo "built $(BIN_DIR)/$(BINARY) ($(VERSION), tags: $(FULL_TAGS))"
+
+## run: publish over Tailscale Serve and start the receiver.
+##      IQ=<file.cf32> replays a capture instead of using the radio.
+##      PORT= changes the local port; LISTEN= overrides the bind address.
+##
+## Serving through Tailscale is not only about reachability: it terminates TLS,
+## and the browser's low-latency audio path needs a secure context. Over plain
+## http the client silently falls back to the delayed WAV stream.
+run: $(if $(IQ),build,build-full)
+	@command -v $(TAILSCALE) >/dev/null 2>&1 || { \
+		echo "tailscale not found; serving on $(LISTEN) only"; exit 0; }
+	@$(TAILSCALE) serve --bg $(PORT) >/dev/null 2>&1 \
+		&& $(TAILSCALE) serve status | sed 's/^/  /' \
+		|| echo "could not configure tailscale serve; try: sudo $(TAILSCALE) set --operator=$$USER"
+	@echo
+	$(BIN_DIR)/$(BINARY) --config $(CONFIG) --listen $(LISTEN) serve $(if $(IQ),--iq $(IQ),)
+
+## run-embed: run the receiver plus a demo page that embeds it from a different
+##            origin, both over Tailscale Serve. Needs tailscale and python3.
+run-embed: $(if $(IQ),build,build-full)
+	@command -v $(TAILSCALE) >/dev/null 2>&1 || { \
+		echo "run-embed needs tailscale"; exit 1; }
+	@command -v python3 >/dev/null 2>&1 || { \
+		echo "run-embed needs python3 to serve the demo page"; exit 1; }
+	@set -e; \
+	name=$$($(TAILSCALE) status --json | python3 -c \
+		'import json,sys; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))'); \
+	recv="https://$$name"; host="https://$$name:$(EMBED_HTTPS_PORT)"; \
+	mkdir -p $(BIN_DIR)/embed-host; \
+	sed -e "s|@RECEIVER@|$$recv|g" -e "s|@HOST@|$$host|g" \
+		examples/embed-host/index.html.in > $(BIN_DIR)/embed-host/index.html; \
+	$(TAILSCALE) serve --bg $(PORT) >/dev/null; \
+	$(TAILSCALE) serve --https=$(EMBED_HTTPS_PORT) --bg $(EMBED_PORT) >/dev/null; \
+	python3 -m http.server $(EMBED_PORT) --bind 127.0.0.1 \
+		--directory $(BIN_DIR)/embed-host >/dev/null 2>&1 & \
+	page=$$!; trap "kill $$page 2>/dev/null" EXIT INT TERM; \
+	printf '\n  receiver    %s\n  demo page   %s   <- open this\n\n' "$$recv" "$$host"; \
+	$(BIN_DIR)/$(BINARY) --config $(CONFIG) --listen $(LISTEN) serve \
+		--embed-origin "$$host" $(if $(IQ),--iq $(IQ),)
+
+## serve-off: stop publishing over Tailscale Serve
+serve-off:
+	-@$(TAILSCALE) serve --https=443 off 2>/dev/null
+	-@$(TAILSCALE) serve --https=$(EMBED_HTTPS_PORT) off 2>/dev/null
+	@echo "tailscale serve disabled"
 
 ## test: full test suite under the race detector
 test:

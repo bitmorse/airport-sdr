@@ -52,9 +52,9 @@ embed:
   allowed_origins: []
 
   # Default iframe size advertised by the oEmbed endpoint. The embedded player
-  # is a single button, so it is small; an embedder can override it anyway.
-  width: 280
-  height: 64
+  # is compact by design; an embedder can override the iframe size anyway.
+  width: 230
+  height: 48
 
 # The radio covers one group at a time. Every channel inside the active group
 # is demodulated in parallel; switching groups retunes the tuner.

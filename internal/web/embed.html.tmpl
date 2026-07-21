@@ -6,28 +6,53 @@
 <title>{{.Channel}}</title>
 <link rel="alternate" type="application/json+oembed" href="{{.OEmbed}}" title="{{.Channel}}">
 <style>
-  :root { --bg: #14171c; --text: #e6e9ef; --dim: #8b93a1; --accent: #4a9eff; --live: #34d17d; }
-  :root[data-theme="light"] { --bg: #fff; --text: #1a1d23; --dim: #666e7d; --accent: #0b6bcb; --live: #12904f; }
+  :root {
+    --bg: #14171c; --text: #e6e9ef; --dim: #8b93a1;
+    --accent: #4a9eff; --live: #34d17d; --line: #2c323c;
+  }
+  :root[data-theme="light"] {
+    --bg: #fff; --text: #1a1d23; --dim: #6b7280;
+    --accent: #0b6bcb; --live: #12904f; --line: #e3e7ee;
+  }
   @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) { --bg: #fff; --text: #1a1d23; --dim: #666e7d; --accent: #0b6bcb; --live: #12904f; }
+    :root:not([data-theme="dark"]) {
+      --bg: #fff; --text: #1a1d23; --dim: #6b7280;
+      --accent: #0b6bcb; --live: #12904f; --line: #e3e7ee;
+    }
   }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
-    display: flex; align-items: center; gap: .65rem; padding: .5rem .75rem;
-    background: var(--bg); color: var(--text);
-    font: 14px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; align-items: center; gap: .55rem; padding: 0 .55rem;
+    background: var(--bg); color: var(--text); overflow: hidden;
+    font: 13px/1.25 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  button {
-    font: inherit; font-weight: 500; color: #fff; background: var(--accent);
-    border: 0; border-radius: 7px; padding: .4rem .9rem; cursor: pointer; flex: none;
+
+  #toggle {
+    flex: none; width: 30px; height: 30px; padding: 0; border: 0; cursor: pointer;
+    border-radius: 50%; background: var(--accent); color: #fff;
+    display: grid; place-items: center;
   }
-  button.on { background: #d1495b; }
-  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: #3a4150; flex: none; }
-  .dot.open { background: var(--live); box-shadow: 0 0 7px var(--live); }
-  .name { font-weight: 600; white-space: nowrap; }
-  .freq { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .msg { color: var(--dim); font-size: .8rem; margin-left: auto; text-align: right; }
+  #toggle:hover { filter: brightness(1.12); }
+  #toggle.on { background: #d1495b; }
+  #toggle svg { width: 10px; height: 10px; fill: currentColor; display: block; }
+
+  /* Name over frequency: two short lines read better than one long row. */
+  .meta { min-width: 0; flex: 1 1 auto; display: flex; flex-direction: column; }
+  .name { font-weight: 600; letter-spacing: -.01em; }
+  .sub {
+    color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #msg { color: #e0a458; }
+
+  .status { flex: none; display: flex; align-items: center; gap: .3rem; color: var(--dim); }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--line); transition: background .15s;
+  }
+  .dot.open { background: var(--live); box-shadow: 0 0 6px var(--live); }
+  #listeners { font-size: 11px; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body
@@ -37,14 +62,21 @@
   data-audio-rate="{{.AudioRate}}"
   data-origin="{{.Origin}}"
   data-muted="{{.Muted}}"
-  data-autoplay="{{.Autoplay}}"
   data-theme="{{.Theme}}"
 >
-  <button id="toggle" type="button">Listen</button>
-  <span class="dot" id="squelch" title="carrier"></span>
-  <span class="name">{{.Channel}}</span>
-  <span class="freq" id="freq"></span>
-  <span class="msg" id="msg"></span>
+  <button id="toggle" type="button" aria-label="Listen">
+    <svg id="icon" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 1l7 4-7 4z"/></svg>
+  </button>
+
+  <div class="meta">
+    <span class="name">{{.Channel}}</span>
+    <span class="sub"><span id="freq"></span><span id="msg"></span></span>
+  </div>
+
+  <div class="status">
+    <span class="dot" id="squelch" title="carrier"></span>
+    <span id="listeners" title="listeners"></span>
+  </div>
 
 <script src="/static/player.js"></script>
 <script src="/static/embed.js"></script>
