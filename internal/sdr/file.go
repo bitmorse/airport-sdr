@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -95,6 +96,24 @@ func NewFileSource(opts FileOptions) (*FileSource, error) {
 
 func (s *FileSource) SampleRate() float64 { return s.opts.SampleRate }
 func (s *FileSource) CenterFreq() float64 { return s.opts.CenterFreq }
+
+// Retune accepts only the tuning the capture was recorded with.
+//
+// A file holds one fixed slice of spectrum. Silently accepting another tuning
+// would demodulate the wrong offsets from the right samples and produce
+// confident nonsense, so switching to a group this capture cannot serve is an
+// error the caller has to handle.
+func (s *FileSource) Retune(centerFreq, sampleRate float64) error {
+	if math.Abs(centerFreq-s.opts.CenterFreq) > hzTolerance ||
+		math.Abs(sampleRate-s.opts.SampleRate) > hzTolerance {
+		return fmt.Errorf(
+			"capture %s holds %.4f MHz at %.3f MS/s and cannot be retuned to "+
+				"%.4f MHz at %.3f MS/s; record that group separately to replay it",
+			s.opts.Path, s.opts.CenterFreq/1e6, s.opts.SampleRate/1e6,
+			centerFreq/1e6, sampleRate/1e6)
+	}
+	return nil
+}
 
 func (s *FileSource) Describe() string {
 	mode := "once"

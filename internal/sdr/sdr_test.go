@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -318,6 +319,40 @@ func TestFileSourceReportsItsConfiguration(t *testing.T) {
 	if src.Describe() == "" {
 		t.Error("Describe() must not be empty")
 	}
+}
+
+// --- retuning ---------------------------------------------------------------
+
+// A capture holds one slice of spectrum and cannot be moved. Accepting its own
+// tuning keeps replay usable for the group it was recorded with, while any
+// other request has to fail rather than silently demodulate the wrong band.
+func TestFileSourceRetuneAcceptsItsOwnTuning(t *testing.T) {
+	src := newFileSource(t, writeCF32(t, ramp(64)), nil)
+	if err := src.Retune(src.CenterFreq(), src.SampleRate()); err != nil {
+		t.Errorf("retuning to the capture's own tuning must succeed: %v", err)
+	}
+}
+
+func TestFileSourceRetuneRejectsADifferentGroup(t *testing.T) {
+	src := newFileSource(t, writeCF32(t, ramp(64)), nil)
+
+	t.Run("different centre", func(t *testing.T) {
+		err := src.Retune(121_805_000, src.SampleRate())
+		if err == nil {
+			t.Fatal("a recorded capture cannot be retuned to another frequency")
+		}
+		// The message has to say why, since this is what a user hits when they
+		// switch groups while replaying a capture.
+		if !strings.Contains(err.Error(), "121.805") && !strings.Contains(err.Error(), "121805000") {
+			t.Errorf("error should name the requested frequency, got: %v", err)
+		}
+	})
+
+	t.Run("different sample rate", func(t *testing.T) {
+		if err := src.Retune(src.CenterFreq(), 2_400_000); err == nil {
+			t.Fatal("a recorded capture cannot be replayed at another sample rate")
+		}
+	})
 }
 
 // FileSource must satisfy Source; this fails at compile time if it drifts.

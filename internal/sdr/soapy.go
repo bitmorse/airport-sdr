@@ -90,20 +90,82 @@ func NewSoapySource(opts SoapyOptions) (Source, error) {
 		opts.PoolSize = defaultPoolBlocks
 	}
 
-	s := &SoapySource{
-		opts:      opts,
-		blockSize: opts.BlockSize,
-		pool:      NewBlockPool(opts.PoolSize, opts.BlockSize),
-	}
+	s := &SoapySource{opts: opts}
 	if err := s.open(); err != nil {
 		return nil, err
 	}
-
-	s.cbuf = C.malloc(C.size_t(opts.BlockSize * SampleBytes))
-	s.buffs = (*unsafe.Pointer)(C.malloc(C.size_t(unsafe.Sizeof(uintptr(0)))))
-	*s.buffs = s.cbuf
+	s.allocBuffers()
 
 	return s, nil
+}
+
+// allocBuffers sizes the block pool and the C receive buffer for the current
+// block size, releasing anything previously allocated. Callers hold mu.
+func (s *SoapySource) allocBuffers() {
+	s.freeBuffers()
+
+	s.blockSize = s.opts.BlockSize
+	s.pool = NewBlockPool(s.opts.PoolSize, s.opts.BlockSize)
+	s.cbuf = C.malloc(C.size_t(s.opts.BlockSize * SampleBytes))
+	s.buffs = (*unsafe.Pointer)(C.malloc(C.size_t(unsafe.Sizeof(uintptr(0)))))
+	*s.buffs = s.cbuf
+}
+
+func (s *SoapySource) freeBuffers() {
+	if s.buffs != nil {
+		C.free(unsafe.Pointer(s.buffs))
+		s.buffs = nil
+	}
+	if s.cbuf != nil {
+		C.free(s.cbuf)
+		s.cbuf = nil
+	}
+}
+
+// blockSizeFor derives a block of roughly defaultBlockDuration at the rate.
+func blockSizeFor(sampleRate float64) int {
+	n := int(sampleRate * defaultBlockDuration.Seconds())
+	if n < minBlockSize {
+		n = minBlockSize
+	}
+	return n
+}
+
+// Retune moves the device to a new group's tuning.
+//
+// The device is closed and reopened rather than adjusted in place: the sample
+// rate may change, which resizes the stream and the buffers behind it, and the
+// reopen path is the one already proven by reconnect(). Reopening also puts the
+// request back through Resolve, so an unsupported rate is refused rather than
+// silently snapped to something close.
+//
+// Must not be called while a stream is running; see the Source interface.
+func (s *SoapySource) Retune(centerFreq, sampleRate float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	previous := s.opts
+	s.opts.CenterFreq = centerFreq
+	s.opts.SampleRate = sampleRate
+	s.opts.BlockSize = blockSizeFor(sampleRate)
+
+	s.closeDevice()
+	if err := s.open(); err != nil {
+		// Put the device back where it was, so a rejected retune costs a gap in
+		// the audio rather than a dead receiver.
+		s.opts = previous
+		s.closeDevice()
+		if restoreErr := s.open(); restoreErr != nil {
+			return fmt.Errorf("retune to %.4f MHz at %.3f MS/s failed (%w), and "+
+				"restoring the previous tuning also failed: %v",
+				centerFreq/1e6, sampleRate/1e6, err, restoreErr)
+		}
+		return fmt.Errorf("retune to %.4f MHz at %.3f MS/s: %w",
+			centerFreq/1e6, sampleRate/1e6, err)
+	}
+
+	s.allocBuffers()
+	return nil
 }
 
 // ProbeDevice opens a device, reports what it says it supports, and closes it
@@ -290,14 +352,7 @@ func (s *SoapySource) Close() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.closeDevice()
-		if s.buffs != nil {
-			C.free(unsafe.Pointer(s.buffs))
-			s.buffs = nil
-		}
-		if s.cbuf != nil {
-			C.free(s.cbuf)
-			s.cbuf = nil
-		}
+		s.freeBuffers()
 	})
 	return nil
 }
@@ -445,6 +500,6 @@ func (s *SoapySource) reconnect() error {
 	if err := s.open(); err != nil {
 		return err
 	}
-	*s.buffs = s.cbuf
+	s.allocBuffers()
 	return nil
 }

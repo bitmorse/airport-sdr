@@ -31,6 +31,18 @@ type Source interface {
 	Start(ctx context.Context) (<-chan *Block, error)
 	SampleRate() float64
 	CenterFreq() float64
+
+	// Retune moves the source to a new centre frequency and sample rate.
+	//
+	// It must NOT be called while a stream is running: cancel the context
+	// passed to Start and wait for its channel to close first. Retuning a live
+	// device would pull the hardware out from under the receive loop, and the
+	// samples either side of the change belong to different bands anyway.
+	//
+	// On failure the source is left on its previous tuning where possible, so a
+	// rejected retune does not take a working receiver down with it.
+	Retune(centerFreq, sampleRate float64) error
+
 	// Describe returns a one-line summary for logs and /api/status.
 	Describe() string
 	Close() error
