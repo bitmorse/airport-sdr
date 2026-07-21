@@ -81,10 +81,7 @@ func lastError() string {
 // it reports supporting, and applies them.
 func NewSoapySource(opts SoapyOptions) (Source, error) {
 	if opts.BlockSize <= 0 {
-		opts.BlockSize = int(opts.SampleRate * defaultBlockDuration.Seconds())
-		if opts.BlockSize < minBlockSize {
-			opts.BlockSize = minBlockSize
-		}
+		opts.BlockSize = BlockSizeFor(opts.SampleRate)
 	}
 	if opts.PoolSize <= 0 {
 		opts.PoolSize = defaultPoolBlocks
@@ -122,15 +119,6 @@ func (s *SoapySource) freeBuffers() {
 	}
 }
 
-// blockSizeFor derives a block of roughly defaultBlockDuration at the rate.
-func blockSizeFor(sampleRate float64) int {
-	n := int(sampleRate * defaultBlockDuration.Seconds())
-	if n < minBlockSize {
-		n = minBlockSize
-	}
-	return n
-}
-
 // Retune moves the device to a new group's tuning.
 //
 // The device is closed and reopened rather than adjusted in place: the sample
@@ -147,7 +135,7 @@ func (s *SoapySource) Retune(centerFreq, sampleRate float64) error {
 	previous := s.opts
 	s.opts.CenterFreq = centerFreq
 	s.opts.SampleRate = sampleRate
-	s.opts.BlockSize = blockSizeFor(sampleRate)
+	s.opts.BlockSize = BlockSizeFor(sampleRate)
 
 	s.closeDevice()
 	if err := s.open(); err != nil {

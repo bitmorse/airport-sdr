@@ -123,6 +123,17 @@ func (p *BlockPool) Free() int { return len(p.free) }
 // BlockSize reports the sample count of blocks from this pool.
 func (p *BlockPool) BlockSize() int { return p.size }
 
+// BlockSizeFor returns a sensible block length for a sample rate: roughly
+// 20 ms of samples, which matches the order of magnitude a driver hands back
+// and keeps latency low, with a floor for very low rates.
+func BlockSizeFor(sampleRate float64) int {
+	n := int(sampleRate * defaultBlockDuration.Seconds())
+	if n < minBlockSize {
+		n = minBlockSize
+	}
+	return n
+}
+
 // EncodeCF32 writes src into dst as interleaved little-endian float32 pairs and
 // returns the number of samples written, which is limited by whichever of the
 // two buffers runs out first. It allocates nothing.

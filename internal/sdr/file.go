@@ -63,10 +63,7 @@ func NewFileSource(opts FileOptions) (*FileSource, error) {
 		return nil, fmt.Errorf("sample rate must be positive, got %v", opts.SampleRate)
 	}
 	if opts.BlockSize <= 0 {
-		opts.BlockSize = int(opts.SampleRate * defaultBlockDuration.Seconds())
-		if opts.BlockSize < minBlockSize {
-			opts.BlockSize = minBlockSize
-		}
+		opts.BlockSize = BlockSizeFor(opts.SampleRate)
 	}
 	if opts.PoolSize <= 0 {
 		opts.PoolSize = defaultPoolBlocks
